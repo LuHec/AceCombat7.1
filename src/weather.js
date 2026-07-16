@@ -3,10 +3,10 @@ import * as THREE from 'three';
 import { clamp, lerp, rand, randSpread } from './utils.js';
 
 export const WEATHER_STATES = [
-  { key: 'CLEAR',  cov: 0.34, rain: 0,    storm: 0,    fog: 0.00010, fogCol: new THREE.Color(0xd9ab8a), bolt: 0 },
-  { key: 'CLOUDY', cov: 0.66, rain: 0,    storm: 0.20, fog: 0.00016, fogCol: new THREE.Color(0xb79b8d), bolt: 0 },
-  { key: 'RAIN',   cov: 0.88, rain: 0.65, storm: 0.45, fog: 0.00024, fogCol: new THREE.Color(0x848b9a), bolt: 0.12 },
-  { key: 'STORM',  cov: 1.00, rain: 1.00, storm: 0.85, fog: 0.00030, fogCol: new THREE.Color(0x646d7d), bolt: 1 },
+  { key: 'CLEAR',  cov: 0.40, rain: 0,    storm: 0,    fog: 0.00010, fogCol: new THREE.Color(0xd9ab8a), bolt: 0,    form: [0.50, 2.2, 0.70, 0.75] },
+  { key: 'CLOUDY', cov: 0.66, rain: 0,    storm: 0.20, fog: 0.00016, fogCol: new THREE.Color(0xb79b8d), bolt: 0,    form: [0.62, 2.6, 0.55, 0.60] },
+  { key: 'RAIN',   cov: 0.88, rain: 0.65, storm: 0.45, fog: 0.00024, fogCol: new THREE.Color(0x848b9a), bolt: 0.12, form: [0.75, 3.0, 0.40, 0.48] },
+  { key: 'STORM',  cov: 1.00, rain: 1.00, storm: 0.85, fog: 0.00030, fogCol: new THREE.Color(0x646d7d), bolt: 1,    form: [0.85, 3.4, 0.28, 0.38] },
 ];
 
 const RAIN_N = 2200;
@@ -18,7 +18,7 @@ export class Weather {
     this.audio = audio;
 
     this.stateIdx = 0;
-    this.cur = { cov: 0.34, rain: 0, storm: 0, fog: 0.00010, fogCol: WEATHER_STATES[0].fogCol.clone(), bolt: 0 };
+    this.cur = { cov: 0.40, rain: 0, storm: 0, fog: 0.00010, fogCol: WEATHER_STATES[0].fogCol.clone(), bolt: 0, form: WEATHER_STATES[0].form.slice() };
     this.autoT = 0;
     this.flash = 0;
     this._boltT = 3;
@@ -55,6 +55,7 @@ export class Weather {
   get target() { return WEATHER_STATES[this.stateIdx]; }
   get rainIntensity() { return this.cur.rain; }
   get coverage() { return this.cur.cov; }
+  get cloudForm() { return this.cur.form; }
 
   _strike(camPos) {
     const ang = rand(Math.PI * 2), dist = rand(500, 2600);
@@ -91,10 +92,12 @@ export class Weather {
     c.fog = lerp(c.fog, tg.fog, k);
     c.bolt = lerp(c.bolt, tg.bolt, k);
     c.fogCol.lerp(tg.fogCol, k);
+    for (let i = 0; i < 4; i++) c.form[i] = lerp(c.form[i], tg.form[i], k);
 
     this.world.setFog(c.fogCol, c.fog);
     this.world.setStorm(c.storm);
     this.world.setCloudCoverage(c.cov);
+    this.world.skyUniforms.cloudForm.value.set(c.form[0], c.form[1], c.form[2], c.form[3]);
 
     // 自动轮换天气
     if (autoCycle) {

@@ -13,24 +13,24 @@ export function cloudMapCoverage(x, z) {
   let c = fbm2(x * 0.00003 + 11.7, z * 0.00003 + 4.2, 4);
   return clamp((c - 0.38) * 2.4, 0, 1);
 }
-// 供主循环做穿云检测（与 shader 同公式）
-export function cloudDensityAt(x, y, z, time, coverage) {
+// 供主循环做穿云检测（与 shader 同公式，form = [云顶, 密度, 侵蚀, 垂直拉伸]）
+export function cloudDensityAt(x, y, z, time, coverage, form) {
   if (y < CLOUD_BASE || y > CLOUD_TOP) return 0;
   const map = cloudMapCoverage(x, z);
   const w = clamp(map * 0.62 + (coverage - 0.45) * 1.05, 0, 1);
   if (w < 0.04) return 0;
-  const qx = (x + time * 9) * 0.000075, qy = y * 0.62 * 0.000075, qz = z * 0.000075;
+  const qx = (x + time * 9) * 0.000075, qy = y * form[3] * 0.000075, qz = z * 0.000075;
   const base = fbm3(qx, qy, qz, 4);
   let d = base - (1.06 - w * 0.92);
   if (d <= 0) return 0;
   const h = (y - CLOUD_BASE) / (CLOUD_TOP - CLOUD_BASE);
-  const grad = clamp(h / 0.07, 0, 1) * (1 - clamp((h - 0.55) / 0.45, 0, 1));
+  const grad = clamp(h / 0.07, 0, 1) * (1 - clamp((h - form[0]) / (1 - form[0]), 0, 1));
   d *= grad * (0.55 + 1.5 * h);
   if (d < 0.28) {
     const rid = 1 - Math.abs(2 * noise3(x * 0.00085 + time * 2, y * 0.00085, z * 0.00085) - 1);
-    d -= (0.28 - d) * rid * 0.6;
+    d -= (0.28 - d) * rid * form[2];
   }
-  return clamp(d * 2.4, 0, 1.6);
+  return clamp(d * form[1], 0, 1.6);
 }
 
 // 生成云图纹理（256²，覆盖 ±50km）
@@ -60,7 +60,7 @@ function makeCloudMapTexture() {
 // 巨炮地井位置（第二关）
 export const SILO_POS = new THREE.Vector3(5400, 0, 4400);
 
-// 共享云场 GLSL（调用前需声明 uniform float time, coverage; uniform sampler2D cloudMap; 阴影函数另需 uniform vec3 sunDir）
+// 共享云场 GLSL（调用前需声明 uniform float time, coverage; uniform vec4 cloudForm; uniform sampler2D cloudMap; 阴影函数另需 uniform vec3 sunDir）
 export const CLOUD_GLSL = `
   float hashC(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
   float noiseC(vec3 p){
@@ -78,24 +78,24 @@ export const CLOUD_GLSL = `
     for (int k = 0; k < 4; k++){ v += a * noiseC(p); p *= 2.13; a *= 0.5; }
     return v;
   }
-  // 云密度场：云图决定地理分布（云岸/晴空区），FBM 塑形，边缘 ridged 侵蚀
+  // 云密度场：云图决定地理分布；cloudForm 随天气塑形（云顶/密度/侵蚀/垂直拉伸）
   float cloudField(vec3 p){
     if (p.y < 480.0 || p.y > 4200.0) return 0.0;
     float map = texture2D(cloudMap, p.xz * 0.00001 + 0.5).r;
     float w = clamp(map * 0.62 + (coverage - 0.45) * 1.05, 0.0, 1.0);
     if (w < 0.04) return 0.0;
-    vec3 q = vec3(p.x + time * 9.0, p.y * 0.62, p.z) * 0.000075;
+    vec3 q = vec3(p.x + time * 9.0, p.y * cloudForm.w, p.z) * 0.000075;
     float base = fbmC(q);
     float d = base - (1.06 - w * 0.92);
     if (d <= 0.0) return 0.0;
     float h = (p.y - 480.0) / 3720.0;
-    float grad = smoothstep(0.0, 0.07, h) * (1.0 - smoothstep(0.55, 1.0, h));
+    float grad = smoothstep(0.0, 0.07, h) * (1.0 - smoothstep(cloudForm.x, 1.0, h));
     d *= grad * (0.55 + 1.5 * h);        // 顶部蓬松的积云塔
     if (d < 0.28){
       float rid = 1.0 - abs(2.0 * noiseC(p * 0.00085 + vec3(time * 2.0, 0.0, 0.0)) - 1.0);
-      d -= (0.28 - d) * rid * 0.6;
+      d -= (0.28 - d) * rid * cloudForm.z;
     }
-    return clamp(d * 2.4, 0.0, 1.6);
+    return clamp(d * cloudForm.y, 0.0, 1.6);
   }
   // 云对地面的投影：直接采样云场本体 → 锐利、跟随云形的影子
   float cloudGroundShadow(vec2 xz){
@@ -156,6 +156,7 @@ export class World {
       storm: { value: 0 },
       time: { value: 0 },
       coverage: { value: 0.34 },
+      cloudForm: { value: new THREE.Vector4(0.5, 2.2, 0.7, 0.75) },
       fogColor: { value: new THREE.Color(0xd9ab8a) },
       fogDensity: { value: 0.0001 },
       zenith: { value: new THREE.Color(0x1e2a4a) },
@@ -206,6 +207,7 @@ export class World {
       fogDensity: { value: 0.00013 },
       flash: { value: 0 },
       coverage: this.skyUniforms.coverage,
+      cloudForm: this.skyUniforms.cloudForm,
       cloudMap: { value: this.cloudMapTex },
     };
     const oceanMat = new THREE.ShaderMaterial({
@@ -221,6 +223,7 @@ export class World {
         }`,
       fragmentShader: `
         uniform float time, fogDensity, flash, coverage;
+        uniform vec4 cloudForm;
         uniform vec3 sunDir, sunColor, deepColor, skyColor, fogColor;
         uniform sampler2D cloudMap;
         varying vec3 vWorld; varying float vDepth;
@@ -294,13 +297,14 @@ export class World {
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.time = skyU.time;
       shader.uniforms.coverage = skyU.coverage;
+      shader.uniforms.cloudForm = skyU.cloudForm;
       shader.uniforms.sunDir = skyU.sunDir;
       shader.uniforms.cloudMap = { value: this.cloudMapTex };
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vCShPos;')
         .replace('#include <project_vertex>', '#include <project_vertex>\nvCShPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform float time;\nuniform float coverage;\nuniform vec3 sunDir;\nuniform sampler2D cloudMap;\nvarying vec3 vCShPos;\n' + CLOUD_GLSL)
+        .replace('#include <common>', '#include <common>\nuniform float time;\nuniform float coverage;\nuniform vec4 cloudForm;\nuniform vec3 sunDir;\nuniform sampler2D cloudMap;\nvarying vec3 vCShPos;\n' + CLOUD_GLSL)
         .replace('#include <dithering_fragment>', 'gl_FragColor.rgb *= cloudGroundShadow(vCShPos.xz);\n#include <dithering_fragment>');
     };
     const terrain = new THREE.Mesh(geo, mat);

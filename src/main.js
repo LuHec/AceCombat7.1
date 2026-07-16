@@ -56,6 +56,7 @@ const cloudPass = new ShaderPass({
     uniform vec2 projInfo, zInfo;
     uniform vec3 sunDir, sunColor, fogColor;
     uniform float flash, storm, time, coverage, fogDensity;
+    uniform vec4 cloudForm;
     varying vec2 vUv;
     ${CLOUD_GLSL}
     float hg(float c, float g){ float g2 = g * g; return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * c, 1.5); }
@@ -183,7 +184,7 @@ const world = new World(scene);
 const audio = new GameAudio();
 const weather = new Weather(scene, world, audio);
 // 共享世界 uniforms 到云 Pass
-for (const k of ['sunDir', 'sunColor', 'fogColor', 'fogDensity', 'flash', 'storm', 'time', 'coverage'])
+for (const k of ['sunDir', 'sunColor', 'fogColor', 'fogDensity', 'flash', 'storm', 'time', 'coverage', 'cloudForm'])
   cloudPass.uniforms[k] = world.skyUniforms[k];
 cloudPass.uniforms.cloudMap = { value: world.cloudMapTex };
 const hud = new HUD(document.getElementById('hud'));
@@ -444,7 +445,7 @@ function step(dt) {
     }
 
     // 穿云检测（体积云密度场）
-    const inside = clamp(cloudDensityAt(camera.position.x, camera.position.y, camera.position.z, elapsed, weather.coverage) * 2.0, 0, 1);
+    const inside = clamp(cloudDensityAt(camera.position.x, camera.position.y, camera.position.z, elapsed, weather.coverage, weather.cloudForm) * 2.0, 0, 1);
     G.inCloud = lerp(G.inCloud, inside, Math.min(1, dt * 5));
     cloudfade.style.opacity = (G.inCloud * 0.55).toFixed(2);
 
