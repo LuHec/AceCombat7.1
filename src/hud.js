@@ -43,6 +43,8 @@ export class HUD {
     const cx = W / 2, cy = H / 2;
     const blink = (g.time % 0.5) < 0.28;
 
+    if (p.camMode === 2) this._cockpitFrame(W, H);
+
     // ============ 姿态仪 ============
     const rightW = _v.set(1, 0, 0).applyQuaternion(p.group.quaternion);
     const upW = new THREE.Vector3(0, 1, 0).applyQuaternion(p.group.quaternion);
@@ -141,9 +143,13 @@ export class HUD {
       c.fillRect(W - 44 - i * 11, H - 128, 7, 14);
     }
     this._t('GUN ∞', W - 40, H - 100, 14, GREEN, 'right');
-    if (g.combat.bird.active && g.combat.bird.alive) {
+    if (g.combat.bird && g.combat.bird.active && g.combat.bird.alive) {
       const b = g.combat.bird;
       this._t(`巨鸟装甲 ${Math.max(0, Math.ceil(b.hp))}/${b.maxHp}`, W - 40, H - 74, 13, RED, 'right');
+    }
+    if (g.combat.silo && g.combat.silo.cannon.active && g.combat.silo.cannon.alive) {
+      const cn = g.combat.silo.cannon;
+      this._t(`巨炮装甲 ${Math.max(0, Math.ceil(cn.hp))}/${cn.maxHp}`, W - 40, H - 74, 13, RED, 'right');
     }
 
     // ============ 目标框 ============
@@ -194,6 +200,10 @@ export class HUD {
       this._t('STALL', cx, wy, 18, AMBER, 'center');
       wy += 26;
     }
+    if (g.combat.silo && g.combat.silo.cannon.charging > 0 && blink) {
+      this._t('⚠ 巨炮充能', cx, wy, 22, AMBER, 'center', true);
+      wy += 28;
+    }
 
     // ============ 命中标记 ============
     if (g.combat.hitMarkT > 0) {
@@ -224,6 +234,36 @@ export class HUD {
 
     // ============ 座舱雨滴 ============
     this._droplets(g, dt);
+  }
+
+  // 座舱框架（座舱视角时绘制在 HUD 底层）
+  _cockpitFrame(W, H) {
+    const c = this.ctx;
+    c.save();
+    c.fillStyle = 'rgba(6, 8, 12, 0.97)';
+    // 下仪表台
+    c.beginPath();
+    c.moveTo(0, H);
+    c.lineTo(0, H - 60);
+    c.quadraticCurveTo(W * 0.5, H - 170, W, H - 60);
+    c.lineTo(W, H);
+    c.closePath();
+    c.fill();
+    // 两侧支柱
+    c.beginPath();
+    c.moveTo(0, 0); c.lineTo(90, 0); c.lineTo(34, H); c.lineTo(0, H);
+    c.closePath(); c.fill();
+    c.beginPath();
+    c.moveTo(W, 0); c.lineTo(W - 90, 0); c.lineTo(W - 34, H); c.lineTo(W, H);
+    c.closePath(); c.fill();
+    // 顶部遮阳框
+    c.fillRect(0, 0, W, 26);
+    // 前框中柱
+    c.fillRect(W / 2 - 7, 0, 14, H * 0.16);
+    // 台面上的绿色荧光条
+    c.fillStyle = 'rgba(90, 255, 190, 0.16)';
+    c.fillRect(W * 0.3, H - 96, W * 0.4, 3);
+    c.restore();
   }
 
   _radar(g, cx, cy, r) {
@@ -276,7 +316,14 @@ export class HUD {
     blip(0, 0, 4, WHITE, 'diamond');                    // 宇宙电梯
     for (const d of g.combat.drones) if (d.alive) blip(d.pos.x, d.pos.z, 3, RED);
     for (const m of g.combat.missiles) if (m.alive) blip(m.mesh.position.x, m.mesh.position.z, 2, AMBER);
-    if (g.combat.bird.alive) blip(g.combat.bird.pos.x, g.combat.bird.pos.z, 6, RED, 'diamond');
+    if (g.combat.bird && g.combat.bird.alive) blip(g.combat.bird.pos.x, g.combat.bird.pos.z, 6, RED, 'diamond');
+    if (g.combat.groundTargets) {
+      for (const gt of g.combat.groundTargets) if (gt.alive) blip(gt.pos.x, gt.pos.z, 4, AMBER, 'diamond');
+    }
+    if (g.combat.silo) {
+      const sp = g.combat.silo.group.position;
+      blip(sp.x, sp.z, 5, RED, 'diamond');
+    }
 
     // 玩家（中心三角，朝上）
     c.fillStyle = GREEN;

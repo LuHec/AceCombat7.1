@@ -267,7 +267,119 @@ export function buildArsenalBird() {
   return { group: g, props, beacons };
 }
 
-// ---- 导弹 ----
+// ---- 敌方战斗机（第二关）----
+export const ENEMY_DEF = {
+  id: 'su57', name: 'SU-57', role: 'ENEMY FIGHTER',
+  maxSpeed: 640, accel: 55, pitch: 1.5, roll: 3.0, yaw: 0.55, msl: 999, hp: 3,
+  color: 0x49505c, stats: {},
+};
+
+// ---- SAM 防空导弹设施 ----
+export function buildSAMSite() {
+  const g = new THREE.Group();
+  const concrete = new THREE.MeshStandardMaterial({ color: 0x8a8d90, roughness: 0.9 });
+  const military = new THREE.MeshStandardMaterial({ color: 0x5a6350, roughness: 0.7, metalness: 0.3 });
+
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(13, 14, 2.5, 10), concrete);
+  pad.position.y = 1;
+  g.add(pad);
+  g.add(box(8, 4, 6, concrete, -4, 4, 0));                        // 掩体
+  const dish = new THREE.Group();                                  // 旋转雷达
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 7, 6), military);
+  pole.position.y = 3.5;
+  dish.add(pole);
+  const ant = new THREE.Mesh(new THREE.SphereGeometry(3.2, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2.4), military);
+  ant.position.y = 7;
+  ant.rotation.x = Math.PI / 3.2;
+  dish.add(ant);
+  dish.position.set(5, 0, -3);
+  g.add(dish);
+  for (const s of [-1, 1]) {                                       // 导弹发射架
+    const rack = box(3.2, 1.2, 5.5, military, 2 + s * 4.5, 3.2, 4);
+    g.add(rack);
+    for (let i = 0; i < 4; i++) {
+      const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 5.2, 6), MAT.dark);
+      tube.rotation.x = Math.PI / 2.6;
+      tube.position.set(2 + s * 4.5 - 1.2 + i * 0.8, 4.4, 4);
+      g.add(tube);
+    }
+  }
+  const beacon = navLight(0xff3524, -4, 7.5, 0, 0.35);
+  g.add(beacon);
+  return { group: g, dish, beacon };
+}
+
+// ---- 地井 + 巨炮（第二关决战）----
+export function buildSilo() {
+  const g = new THREE.Group();
+  const metal = new THREE.MeshStandardMaterial({ color: 0x9aa2ac, metalness: 0.8, roughness: 0.4 });
+  const metalD = new THREE.MeshStandardMaterial({ color: 0x5d646d, metalness: 0.75, roughness: 0.5 });
+
+  // 井缘
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(150, 7, 10, 40), metalD);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 2;
+  g.add(rim);
+  // 8 扇圆形地面门
+  const doors = [];
+  for (let i = 0; i < 8; i++) {
+    const wedge = new THREE.Mesh(new THREE.CylinderGeometry(148, 148, 9, 6, 1, false, i * Math.PI / 4, Math.PI / 4 * 0.97), metal);
+    wedge.position.y = 0;
+    g.add(wedge);
+    const mid = i * Math.PI / 4 + Math.PI / 8;
+    doors.push({ mesh: wedge, dir: new THREE.Vector3(Math.cos(mid), 0, Math.sin(mid)) });
+  }
+  // 井筒（黑）
+  const hole = new THREE.Mesh(new THREE.CylinderGeometry(146, 146, 140, 24, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 1, side: THREE.BackSide }));
+  hole.position.y = -70;
+  g.add(hole);
+  const bottom = new THREE.Mesh(new THREE.CircleGeometry(146, 24), new THREE.MeshBasicMaterial({ color: 0x0a0c10 }));
+  bottom.rotation.x = -Math.PI / 2;
+  bottom.position.y = -139;
+  g.add(bottom);
+
+  // 升降平台 + 巨炮
+  const platform = new THREE.Group();
+  platform.position.y = -118;
+  const deck = new THREE.Mesh(new THREE.CylinderGeometry(132, 132, 16, 24), metalD);
+  platform.add(deck);
+  const turret = new THREE.Group();                                // 可旋转炮塔
+  const ped = new THREE.Mesh(new THREE.CylinderGeometry(20, 24, 20, 12), metal);
+  ped.position.y = 18;
+  turret.add(ped);
+  turret.add(box(44, 16, 44, metalD, 0, 10, 0));
+  const breech = box(22, 18, 26, metal, 0, 30, -14);
+  turret.add(breech);
+  const barrelG = new THREE.Group();                               // 炮管（俯仰）
+  barrelG.position.set(0, 32, 0);
+  barrelG.rotation.x = -Math.PI / 3.4;                             // 仰角 ~53°
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(5.2, 6.5, 125, 12), metal);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.z = 55;
+  barrelG.add(barrel);
+  for (let i = 0; i < 3; i++) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(6.8, 1.4, 8, 14), metalD);
+    ring.position.z = 30 + i * 28;
+    barrelG.add(ring);
+  }
+  const core = new THREE.Mesh(new THREE.SphereGeometry(6.5, 14, 12),
+    new THREE.MeshBasicMaterial({ color: 0x66e8ff }));
+  core.position.z = -2;
+  barrelG.add(core);
+  turret.add(barrelG);
+  platform.add(turret);
+  // 平台警示灯
+  const beacons = [];
+  for (let i = 0; i < 6; i++) {
+    const a = i * Math.PI / 3;
+    const b = navLight(0xff5030, Math.cos(a) * 120, 9, Math.sin(a) * 120, 1.2);
+    platform.add(b);
+    beacons.push(b);
+  }
+  g.add(platform);
+  return { group: g, doors, platform, turret, barrelG, core, beacons };
+}
 export function buildMissile() {
   const g = new THREE.Group();
   g.add(cylZ(0.16, 2.4, MAT.missile, 0, 0, 0, 8));

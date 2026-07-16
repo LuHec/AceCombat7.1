@@ -1,8 +1,9 @@
-// 战斗：导弹（比例导引）、机炮、MQ-101 无人机 AI、军械巨鸟、爆炸特效池
+// 战斗：导弹（比例导引）、机炮、MQ-101 无人机与敌战斗机、军械巨鸟、第二关（SAM/巨炮/僚机）、爆炸特效池
 import * as THREE from 'three';
-import { buildDrone, buildArsenalBird, buildMissile } from './models.js';
+import { buildDrone, buildArsenalBird, buildMissile, buildAircraft, ENEMY_DEF } from './models.js';
+import { SAMSite, Silo, CannonShell, Wingman } from './mission2.js';
 import { RibbonTrail, makeGlowTexture, clamp, lerp, rand, randSpread, TAU } from './utils.js';
-import { terrainHeight } from './world.js';
+import { terrainHeight, SILO_POS } from './world.js';
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
@@ -154,17 +155,28 @@ export class Missile {
   }
 }
 
-// ============ 无人机 ============
+// ============ 无人机 / 敌战斗机 ============
 export class Drone {
-  constructor(scene, pos, anchor) {
-    const m = buildDrone();
-    this.model = m;
-    this.group = m.group;
+  constructor(scene, pos, anchor, fighter = false) {
+    this.fighter = fighter;
+    if (fighter) {
+      const m = buildAircraft(ENEMY_DEF);
+      this.model = m;
+      this.group = m.group;
+      for (const b of m.burners) { b.visible = true; b.material.opacity = 0.5; }
+    } else {
+      const m = buildDrone();
+      this.model = m;
+      this.group = m.group;
+    }
     this.group.position.copy(pos);
     this.scene = scene;
     scene.add(this.group);
-    this.speed = rand(230, 285);
-    this.hp = 2;
+    this.speed = fighter ? rand(320, 400) : rand(230, 285);
+    this.hp = fighter ? 3 : 2;
+    this.turnRate = fighter ? 2.1 : 1.7;
+    this.fireRange = fighter ? 1600 : 1100;
+    this.fireCdBase = fighter ? [7, 13] : [11, 18];
     this.alive = true;
     this.anchor = anchor;
     this.orbitR = rand(750, 1250);
@@ -175,8 +187,8 @@ export class Drone {
     this.weaveT = rand(TAU);
     this.vel = new THREE.Vector3(0, 0, this.speed);
     this.fwd = new THREE.Vector3(0, 0, 1);
-    this.missileRadius = 7;
-    this.name = 'UAV';
+    this.missileRadius = fighter ? 9 : 7;
+    this.name = fighter ? 'SU-57' : 'UAV';
     this.evade = 0;
   }
 
@@ -217,7 +229,7 @@ export class Drone {
 
     // 转向（限速率）
     const ang = this.fwd.angleTo(_v3);
-    if (ang > 1e-4) this.fwd.lerp(_v3, Math.min(1, 1.7 * dt / ang)).normalize();
+    if (ang > 1e-4) this.fwd.lerp(_v3, Math.min(1, this.turnRate * dt / ang)).normalize();
     this.vel.copy(this.fwd).multiplyScalar(this.speed);
     pos.addScaledVector(this.vel, dt);
     if (pos.y < gh + 8) pos.y = gh + 8;
@@ -231,11 +243,11 @@ export class Drone {
 
     // 开火：在玩家后半球且指向玩家
     this.fireCd -= dt;
-    if (player.alive && this.fireCd <= 0 && dist < 1100 && dist > 250) {
+    if (player.alive && this.fireCd <= 0 && dist < this.fireRange && dist > 250) {
       const aim = this.fwd.dot(_v1.copy(player.pos).sub(pos).normalize());
       if (aim > 0.94) {
         combat.enemyFire(this);
-        this.fireCd = rand(11, 18);
+        this.fireCd = rand(this.fireCdBase[0], this.fireCdBase[1]);
       }
     }
   }
@@ -349,7 +361,7 @@ export class ArsenalBird {
 
 // ============ 战斗管理器 ============
 export class CombatManager {
-  constructor(scene, world, player, audio, events) {
+  constructor(scene, world, player, audio, events, mission = 1) {
     this.scene = scene;
     this.world = world;
     this.player = player;
@@ -357,9 +369,14 @@ export class CombatManager {
     this.events = events;
     this.effects = new Effects(scene, audio);
 
+    this.mission = mission;
     this.drones = [];
     this.missiles = [];
-    this.bird = new ArsenalBird(scene);
+    this.groundTargets = [];
+    this.shells = [];
+    this.wingmen = [];
+    this.silo = null;
+    this.stage = 'drones';
     this.phase = 1;
     this.wave = 0;
     this.score = 0;
@@ -395,7 +412,34 @@ export class CombatManager {
     }
     this._trI = 0;
 
-    this.spawnWave(5);
+    if (mission === 2) {
+      // ---- 第二关：SAM 设施 + 地井巨炮 + 僚机 + 敌战斗机 ----
+      this.bird = null;
+      const samPos = [[-4100, 2500], [3900, -4100], [-800, 6300], [4900, 3950]];
+      for (const [x, z] of samPos) this.groundTargets.push(new SAMSite(scene, x, z));
+      this.silo = new Silo(scene, audio);
+      this.wingmen = [new Wingman(scene, player, 1), new Wingman(scene, player, -1)];
+      this.stage = 'sam';
+      for (let i = 0; i < 3; i++) this._spawnFighter(rand(2000, 3500));
+    } else {
+      this.bird = new ArsenalBird(scene);
+      this.spawnWave(5);
+    }
+  }
+
+  _spawnFighter(r) {
+    const a = rand(TAU);
+    _v1.set(SILO_POS.x + Math.cos(a) * r, rand(700, 1300), SILO_POS.z + Math.sin(a) * r);
+    this.drones.push(new Drone(this.scene, _v1, new THREE.Vector3(SILO_POS.x, 900, SILO_POS.z), true));
+  }
+  _spawnFighterWave(n) {
+    if (this.mission !== 2 || !this.player.alive) return;
+    for (let i = 0; i < n; i++) {
+      const a = rand(TAU);
+      _v1.set(this.player.pos.x + Math.cos(a) * rand(2600, 4200), rand(600, 1400),
+        this.player.pos.z + Math.sin(a) * rand(2600, 4200));
+      this.drones.push(new Drone(this.scene, _v1, SILO_POS.clone(), true));
+    }
   }
 
   // ---- 目标适配（无人机/巨鸟本身即满足接口）----
@@ -425,6 +469,51 @@ export class CombatManager {
     this.missiles.push(m);
     this.audio.missileFire();
   }
+
+  samFire(sam) {
+    _v1.copy(sam.pos); _v1.y += 6;
+    _v2.copy(this.player.pos).sub(_v1).normalize();
+    const m = new Missile(this.scene, this.effects, 'enemy', this.playerTarget,
+      _v1, _v2, 520, 1.55, 30);
+    this.missiles.push(m);
+    this.audio.missileFire();
+    this.events.onKill('SAM 导弹来袭！');
+  }
+
+  wingmanFire(w, target) {
+    _v1.set(0, 0, 1).applyQuaternion(w.group.quaternion);
+    _v2.copy(w.pos).addScaledVector(_v1, 8);
+    const m = new Missile(this.scene, this.effects, 'player', target, _v2, _v1, 520, 2.2, 100);
+    this.missiles.push(m);
+    this.audio.missileFire();
+    if (Math.random() < 0.4) this.events.onKill('僚机：Fox 3！');
+  }
+
+  cannonFire(cannon) {
+    _v1.copy(cannon.pos);
+    const lead = cannon.pos.distanceTo(this.player.pos) / 520 * 0.85;
+    _v2.copy(this.player.vel).multiplyScalar(lead).add(this.player.pos);
+    this.shells.push(new CannonShell(this.scene, this.effects, _v1, _v2));
+    this.audio.explosion(0.8);
+  }
+
+  onCannonReady() {
+    this.stage = 'cannon';
+    this.events.onStage('cannon');
+    this.events.onKill('巨炮升起——摧毁它！');
+    this.events.onKill('⚠ 敌方战斗机大队接近中！');
+    this._spawnFighterWave(5);
+    setTimeout(() => this._spawnFighterWave(5), 25000);
+  }
+
+  onCannonDown() {
+    this.score += 4000;
+    this.killCount++;
+    this.events.onKill('摧毁巨炮 +4000');
+    setTimeout(() => this.events.onWin(), 2000);
+  }
+
+  onStageReady() {}
 
   playerFire() {
     const p = this.player;
@@ -456,7 +545,9 @@ export class CombatManager {
       if (score > bestScore) { bestScore = score; best = t; }
     };
     for (const d of this.drones) consider(d);
-    if (this.bird.active && this.bird.alive && !this.bird.falling) consider(this.bird);
+    if (this.bird && this.bird.active && this.bird.alive && !this.bird.falling) consider(this.bird);
+    for (const gt of this.groundTargets) consider(gt);
+    if (this.silo && this.silo.cannon.active && this.silo.cannon.alive) consider(this.silo.cannon);
 
     this.lock.hasCandidate = !!best;
     if (best && best === this.lock.target) {
@@ -492,7 +583,9 @@ export class CombatManager {
       if (closest < radius && along < hitDist) { hitDist = along; hitTarget = t; }
     };
     for (const d of this.drones) test(d, 5.5);
-    if (this.bird.active && this.bird.alive && !this.bird.falling) test(this.bird, 120);
+    if (this.bird && this.bird.active && this.bird.alive && !this.bird.falling) test(this.bird, 120);
+    for (const gt of this.groundTargets) test(gt, 14);
+    if (this.silo && this.silo.cannon.active && this.silo.cannon.alive) test(this.silo.cannon, 100);
 
     // 曳光
     const tr = this.tracers[this._trI++ % this.tracers.length];
@@ -508,7 +601,7 @@ export class CombatManager {
       _v3.copy(muzzle).addScaledVector(_v1, hitDist);
       this.effects.spark(_v3);
       this.hitMarkT = 0.18;
-      if (hitTarget !== this.bird && hitTarget.hp <= 0) this._killDrone(hitTarget);
+      if (hitTarget instanceof Drone && hitTarget.hp <= 0) this._killDrone(hitTarget);
     }
   }
 
@@ -559,21 +652,49 @@ export class CombatManager {
       if (!m.alive) this.missiles.splice(i, 1);
     }
 
-    this.bird.update(dt, this);
-
-    // 巨鸟压碎判定（撞上即毁）
-    if (p.alive && this.bird.alive && !this.bird.falling) {
-      if (p.pos.distanceTo(this.bird.pos) < 120) p.damage(200);
+    // ---- 第一关：军械巨鸟 ----
+    if (this.bird) {
+      this.bird.update(dt, this);
+      // 巨鸟压碎判定（撞上即毁）
+      if (p.alive && this.bird.alive && !this.bird.falling) {
+        if (p.pos.distanceTo(this.bird.pos) < 120) p.damage(200);
+      }
+      // 阶段推进
+      if (this.phase === 1) {
+        const alive = this.countDrones();
+        if (alive === 0 && this.wave === 1) this.spawnWave(4);
+        else if (alive === 0 && this.wave >= 2) {
+          this.phase = 2;
+          this.bird.activate();
+          this.events.onPhase(2);
+        }
+      }
     }
 
-    // 阶段推进
-    if (this.phase === 1) {
-      const alive = this.countDrones();
-      if (alive === 0 && this.wave === 1) this.spawnWave(4);
-      else if (alive === 0 && this.wave >= 2) {
-        this.phase = 2;
-        this.bird.activate();
-        this.events.onPhase(2);
+    // ---- 第二关：SAM / 地井巨炮 / 僚机 / 炮弹 ----
+    if (this.mission === 2) {
+      for (const gt of this.groundTargets) {
+        gt.update(dt, p, this);
+        if (gt.alive && gt.hp <= 0) {
+          gt.alive = false;
+          this.effects.explosion(gt.pos, 2.2);
+          this.score += 300;
+          this.killCount++;
+          this.events.onKill('摧毁 SAM 设施 +300');
+        }
+      }
+      for (const w of this.wingmen) w.update(dt, this);
+      this.silo.update(dt, this);
+      for (let i = this.shells.length - 1; i >= 0; i--) {
+        const s = this.shells[i];
+        s.update(dt, p);
+        if (!s.alive) this.shells.splice(i, 1);
+      }
+      if (this.stage === 'sam' && this.groundTargets.every(g => !g.alive)) {
+        this.stage = 'reveal';
+        this.silo.open();
+        this.events.onStage('reveal');
+        this.events.onKill('⚠ 侦测到地下巨型结构活动！');
       }
     }
 
@@ -597,7 +718,25 @@ export class CombatManager {
   targets() {
     const list = [];
     for (const d of this.drones) if (d.alive) list.push(d);
-    if (this.bird.active && this.bird.alive && !this.bird.falling) list.push(this.bird);
+    if (this.bird && this.bird.active && this.bird.alive && !this.bird.falling) list.push(this.bird);
+    for (const gt of this.groundTargets) if (gt.alive) list.push(gt);
+    if (this.silo && this.silo.cannon.active && this.silo.cannon.alive) list.push(this.silo.cannon);
     return list;
+  }
+
+  getObjective() {
+    if (this.mission === 2) {
+      if (this.stage === 'sam') {
+        return `MISSION — 摧毁 SAM 导弹设施（剩余 ${this.groundTargets.filter(g => g.alive).length}）`;
+      }
+      if (this.stage === 'reveal') return 'MISSION — 警告：地下设施展开中…';
+      if (this.silo.cannon.alive) {
+        return `MISSION — 摧毁巨炮（${Math.max(0, Math.ceil(this.silo.cannon.hp))}/${this.silo.cannon.maxHp}）`;
+      }
+      return '';
+    }
+    if (this.phase === 1) return `MISSION — 击坠所有 UAV（剩余 ${this.countDrones()}）`;
+    if (this.bird.alive) return 'MISSION — 摧毁 ARSENAL BIRD「军械巨鸟」';
+    return '';
   }
 }

@@ -147,6 +147,32 @@ export class Player {
 
   updateCamera(camera, dt, t) {
     const mode = this.camMode;
+    this.group.visible = mode !== 2;
+
+    // ---- 座舱视角（FOV 90）----
+    if (mode === 2) {
+      _v1.set(0, 2.05, 3.4).applyQuaternion(this.group.quaternion).add(this.pos);
+      camera.position.lerp(_v1, damp(40, dt));
+      _v2.copy(this.fwd).multiplyScalar(120).add(this.pos);
+      _v2.y += 3.5;
+      camera.lookAt(_v2);
+      _v3.set(0, 1, 0).applyQuaternion(this.group.quaternion);
+      camera.up.lerp(_v3, damp(14, dt)).normalize();
+      const fovT = 90 + (this.ab ? 3 : 0);
+      this._fov = lerp(this._fov, fovT, damp(6, dt));
+      if (Math.abs(camera.fov - this._fov) > 0.05) {
+        camera.fov = this._fov;
+        camera.updateProjectionMatrix();
+      }
+      const sh2 = this.shake + clamp((this.gforce - 6) / 18, 0, 0.35);
+      if (sh2 > 0.01) {
+        camera.position.x += (Math.random() - 0.5) * sh2 * 0.5;
+        camera.position.y += (Math.random() - 0.5) * sh2 * 0.5;
+      }
+      return;
+    }
+
+    // ---- 追逐视角 ----
     _v1.set(0, mode === 0 ? 3.4 : 5.5, mode === 0 ? -13.5 : -24).applyQuaternion(this.group.quaternion).add(this.pos);
     camera.position.lerp(_v1, damp(mode === 0 ? 14 : 9, dt));
     _v2.copy(this.fwd).multiplyScalar(60).add(this.pos);

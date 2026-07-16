@@ -129,6 +129,7 @@ export class GameAudio {
     const s16 = step % 16;
     const chord = MUS_CHORDS[bar];
     const L = this._music.layers;
+    const lv = this._music.level;
 
     // 和声垫（每小节）
     if (s16 === 0) {
@@ -145,15 +146,22 @@ export class GameAudio {
     if (s16 === 0) this._taiko(t, 0.5);
     if (s16 === 10 || s16 === 14) this._taiko(t, 0.28);
     if (s16 % 2 === 0) this._hat(t, s16 % 4 === 0 ? 0.09 : 0.05);
+    // 决战加码：双踩 + 16 分踩镲 + 额外军鼓
+    if (lv >= 4) {
+      if (s16 === 2 || s16 === 10) this._kick(t, 0.32);
+      if (s16 === 14) this._snare(t, 0.16);
+      if (s16 % 2 === 1) this._hat(t, 0.045);
+    }
     // 铜管重音（仅高强度）
     if (s16 === 0 || s16 === 6 || s16 === 10) {
       for (const n of chord) this._voice(midi2f(n + 12), t, stepDur * 2.2, 'sawtooth', 0.055, 1000, L.lead, 0.03, 8);
     }
-    // 英雄主题
+    // 英雄主题（决战时高八度）
     for (const [st, midi, dur] of MUS_LEAD) {
       if (st === step) {
-        this._voice(midi2f(midi), t, stepDur * dur * 0.95, 'sawtooth', 0.085, 2400, L.lead, 0.05, 7);
-        this._voice(midi2f(midi - 12), t, stepDur * dur * 0.95, 'square', 0.03, 1200, L.lead, 0.06, 4);
+        const mm = lv >= 4 ? midi + 12 : midi;
+        this._voice(midi2f(mm), t, stepDur * dur * 0.95, 'sawtooth', 0.085, 2400, L.lead, 0.05, 7);
+        this._voice(midi2f(mm - 12), t, stepDur * dur * 0.95, 'square', 0.03, 1200, L.lead, 0.06, 4);
       }
     }
   }
