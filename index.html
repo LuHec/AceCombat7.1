@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACE COMBAT 7 : SKIES UNKNOWN — Web Fan Tribute</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./libs/three.module.js",
+    "three/addons/": "./libs/addons/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<canvas id="hud"></canvas>
+<div id="vignette"></div>
+<div id="cloudfade"></div>
+<div id="flashfx"></div>
+
+<!-- 标题界面 -->
+<div id="menu-title" class="menu">
+  <div class="title-wrap">
+    <div class="title-tag">WEB FAN TRIBUTE</div>
+    <h1>ACE COMBAT <span class="seven">7</span></h1>
+    <div class="title-sub">SKIES UNKNOWN</div>
+    <div class="title-desc">体积云 · 暴雨雷电动态天气 · 宇宙电梯 · 军械巨鸟</div>
+    <div class="press-start blink">按 [回车] 进入机库</div>
+    <div class="controls-help">
+      <div><b>鼠标</b> 指向（机头追随准星）</div>
+      <div><b>Q / E</b> 滚筒 &nbsp; <b>A / D</b> 平移（方向舵）</div>
+      <div><b>W / S</b> 节流阀 &nbsp; <b>Shift</b> 加力 &nbsp; <b>Ctrl</b> 减速</div>
+      <div><b>左键</b> 机炮 &nbsp; <b>右键 / 空格</b> 导弹（锁定后）</div>
+      <div><b>V</b> 视角 &nbsp; <b>1~4</b> 切换天气 &nbsp; <b>P</b> 暂停</div>
+    </div>
+    <label class="opt-line"><input type="checkbox" id="opt-inverty"> 俯仰反转（鼠标上移 = 俯冲）</label>
+  </div>
+</div>
+
+<!-- 战机选择 -->
+<div id="menu-select" class="menu hidden">
+  <div class="select-head">
+    <div class="select-title">AIRCRAFT SELECT</div>
+    <div class="select-sub">选择你的座机 — 按 1 / 2 / 3 或点击确认</div>
+  </div>
+  <div id="cards"></div>
+  <div class="select-foot">MISSION 06 — «LIGHTHOUSE» 夺回宇宙电梯，击沉军械巨鸟</div>
+</div>
+
+<!-- 结算界面 -->
+<div id="menu-end" class="menu hidden">
+  <div class="end-wrap">
+    <div id="end-title" class="end-title">MISSION ACCOMPLISHED</div>
+    <div id="end-stats" class="end-stats"></div>
+    <div class="end-btns">
+      <button id="btn-retry">再次出击 [R]</button>
+      <button id="btn-hangar">返回机库 [H]</button>
+    </div>
+  </div>
+</div>
+
+<div id="pause" class="hidden">— PAUSED · 按 P 继续 —</div>
+<div id="errlog" style="display:none"></div>
+
+<script>
+  window.__errors = [];
+  if (location.protocol === 'file:') {
+    window.addEventListener('DOMContentLoaded', () => {
+      const d = document.createElement('div');
+      d.style.cssText = 'position:fixed;inset:0;z-index:99;background:rgba(5,7,12,.94);color:#ffd98a;display:flex;align-items:center;justify-content:center;text-align:center;font:16px/2 monospace;padding:40px';
+      d.innerHTML = '本游戏使用了 ES Modules，不能直接双击打开 index.html<br>请双击运行 <b>启动游戏.bat</b>，或在目录下执行 <b>node serve.js</b> 后访问 http://localhost:8123';
+      document.body.appendChild(d);
+    });
+  }
+  window.addEventListener('error', e => {
+    window.__errors.push(String(e.message));
+    document.getElementById('errlog').textContent = window.__errors.join(' | ');
+  });
+  window.addEventListener('unhandledrejection', e => {
+    window.__errors.push('PROMISE:' + String(e.reason));
+    document.getElementById('errlog').textContent = window.__errors.join(' | ');
+  });
+</script>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

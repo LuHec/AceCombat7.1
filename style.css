@@ -1,0 +1,70 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #05070c; }
+body { font-family: "Segoe UI", "Microsoft YaHei", Consolas, monospace; color: #cfe8ff; }
+
+#game, #hud { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#hud { pointer-events: none; z-index: 5; }
+
+/* 覆盖层特效 */
+#vignette { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 35%, rgba(200,10,10,.75) 100%);
+  transition: opacity .15s; }
+#cloudfade { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
+  background: radial-gradient(ellipse at center, rgba(225,232,240,.92) 0%, rgba(190,200,214,.97) 100%);
+  transition: opacity .4s; }
+#flashfx { position: fixed; inset: 0; pointer-events: none; z-index: 7; opacity: 0; background: #fff; }
+
+/* 菜单通用 */
+.menu { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  background: linear-gradient(180deg, rgba(4,8,16,.88) 0%, rgba(6,12,24,.78) 55%, rgba(4,8,16,.9) 100%); }
+.hidden { display: none !important; }
+.blink { animation: blink 1.4s steps(2) infinite; }
+@keyframes blink { 50% { opacity: .15; } }
+
+/* 标题 */
+.title-tag { letter-spacing: .6em; font-size: 13px; color: #6f87a8; margin-bottom: 18px; }
+h1 { font-size: 74px; font-weight: 800; letter-spacing: .12em; color: #eef6ff;
+  text-shadow: 0 0 26px rgba(90,170,255,.55), 0 0 90px rgba(90,170,255,.25); }
+h1 .seven { color: #ffb340; text-shadow: 0 0 30px rgba(255,179,64,.8); }
+.title-sub { font-size: 26px; letter-spacing: 1.15em; text-indent: 1.15em; color: #9fc0e8; margin-top: 6px; }
+.title-desc { margin-top: 26px; font-size: 14px; color: #7fa0c8; letter-spacing: .25em; }
+.press-start { margin-top: 54px; font-size: 20px; color: #ffd98a; letter-spacing: .3em; }
+.controls-help { margin-top: 44px; display: grid; grid-template-columns: auto auto; gap: 8px 34px;
+  font-size: 13px; color: #8aa6c8; text-align: left; }
+.controls-help b { color: #d8ecff; }
+.opt-line { margin-top: 20px; font-size: 13px; color: #8aa6c8; cursor: pointer; user-select: none; }
+.opt-line input { accent-color: #ffb340; cursor: pointer; }
+
+/* 选择界面 */
+.select-head { margin-bottom: 30px; }
+.select-title { font-size: 34px; letter-spacing: .35em; color: #eef6ff; text-shadow: 0 0 20px rgba(90,170,255,.5); }
+.select-sub { margin-top: 10px; color: #8aa6c8; font-size: 14px; letter-spacing: .2em; }
+#cards { display: flex; gap: 26px; }
+.card { width: 280px; padding: 22px 22px 18px; border: 1px solid rgba(120,170,230,.35);
+  background: linear-gradient(180deg, rgba(16,28,48,.85), rgba(8,14,26,.9));
+  cursor: pointer; transition: all .18s; text-align: left; position: relative; }
+.card:hover, .card.sel { border-color: #ffb340; transform: translateY(-6px);
+  box-shadow: 0 0 34px rgba(255,179,64,.25); }
+.card .key-hint { position: absolute; top: 10px; right: 12px; color: #ffb340; font-size: 13px; border: 1px solid rgba(255,179,64,.5); padding: 1px 7px; }
+.card .ac-name { font-size: 21px; color: #f2f8ff; font-weight: 700; }
+.card .ac-role { font-size: 12px; color: #7fa0c8; letter-spacing: .2em; margin: 4px 0 14px; }
+.card .stat { display: flex; align-items: center; margin: 7px 0; font-size: 11px; }
+.card .stat .lbl { width: 74px; color: #8aa6c8; letter-spacing: .1em; }
+.card .bar { flex: 1; height: 6px; background: rgba(120,170,230,.15); }
+.card .bar i { display: block; height: 100%; background: linear-gradient(90deg, #3e9dff, #9fe0ff); box-shadow: 0 0 8px rgba(90,170,255,.7); }
+.card .ac-msl { margin-top: 12px; font-size: 12px; color: #ffd98a; }
+.select-foot { margin-top: 38px; color: #7fa0c8; font-size: 13px; letter-spacing: .25em; }
+
+/* 结算 */
+.end-title { font-size: 52px; font-weight: 800; letter-spacing: .2em; color: #ffd98a;
+  text-shadow: 0 0 34px rgba(255,179,64,.55); }
+.end-title.fail { color: #ff6a5e; text-shadow: 0 0 34px rgba(255,80,60,.55); }
+.end-stats { margin-top: 30px; font-size: 16px; color: #cfe8ff; line-height: 2; letter-spacing: .15em; }
+.end-btns { margin-top: 44px; display: flex; gap: 20px; }
+.end-btns button { padding: 12px 34px; font-size: 15px; letter-spacing: .2em; cursor: pointer;
+  background: rgba(20,36,60,.9); color: #d8ecff; border: 1px solid rgba(120,170,230,.5); font-family: inherit; }
+.end-btns button:hover { border-color: #ffb340; color: #ffd98a; }
+
+#pause { position: fixed; top: 46%; width: 100%; text-align: center; z-index: 15;
+  font-size: 26px; letter-spacing: .4em; color: #ffd98a; text-shadow: 0 0 18px rgba(0,0,0,.8); }
