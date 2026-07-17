@@ -1,10 +1,11 @@
-// 第二关：SAM 地面设施、地井（圆形地面门开启）+ 巨炮、僚机
+// 第二关：SAM 地面设施、地井（圆形地面门开启）+ 巨炮、僚机、我方巨鸟
 import * as THREE from 'three';
-import { buildSAMSite, buildSilo, buildAircraft, ENEMY_DEF } from './models.js';
-import { RibbonTrail, clamp, lerp, damp, rand, TAU } from './utils.js';
+import { buildSAMSite, buildSilo, buildAircraft, buildArsenalBird, ENEMY_DEF } from './models.js';
+import { RibbonTrail, clamp, lerp, damp, rand, randSpread, TAU } from './utils.js';
 import { terrainHeight, SILO_POS } from './world.js';
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+const _vM = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
 // ============ SAM 防空导弹设施 ============
@@ -21,6 +22,7 @@ export class SAMSite {
     this.alive = true;
     this.missileRadius = 16;
     this.name = 'SAM 设施';
+    this.vel = new THREE.Vector3();        // 静态目标，导弹制导接口需要
     this.fireT = rand(5, 10);
     this._smokeT = 0;
   }
@@ -77,21 +79,21 @@ export class Silo {
   }
 
   update(dt, combat) {
-    const m = this.model;
+    const m = this.model, s = m.scale;
     if (this.state === 'opening') {
       this.t += dt;
       const k = clamp(this.t / 8, 0, 1);
       const e = 1 - (1 - k) * (1 - k);          // easeOut
       for (const d of m.doors) {
-        d.mesh.position.copy(d.dir).multiplyScalar(230 * e);
-        d.mesh.position.y = -14 * e;
+        d.mesh.position.copy(d.dir).multiplyScalar(230 * s * e);
+        d.mesh.position.y = -14 * s * e;
       }
       if (k >= 1) { this.state = 'rising'; this.t = 0; this.audio.thunder(300); }
     } else if (this.state === 'rising') {
       this.t += dt;
       const k = clamp(this.t / 10, 0, 1);
       const e = k * k * (3 - 2 * k);            // smoothstep
-      m.platform.position.y = lerp(-118, 20, e);
+      m.platform.position.y = lerp(-118 * s, 20 * s, e);
       if (k >= 1) {
         this.state = 'active';
         this.cannon.active = true;
@@ -114,15 +116,18 @@ export class Cannon {
     this.hp = this.maxHp;
     this.alive = true;
     this.active = false;
-    this.missileRadius = 80;
+    this.missileRadius = 80 * model.scale;
     this.name = '巨炮';
     this.chargeT = 12;
-    this.charging = 0;      // >0 表示正在充能
+    this.charging = 0;      // >0 表示正在充能（对玩家齐射）
+    this.beamT = rand(9, 14);          // 光束（对我方巨鸟）周期
+    this.beamCharging = 0;  // >0 表示正在锁定巨鸟
     this.dead = false;
     this.vel = new THREE.Vector3();
     this._deathT = 0;
   }
   get pos() { return this.model.barrelG.getWorldPosition(_v3.set(0, 0, 0)); }
+  get muzzle() { return this.model.barrelG.localToWorld(_vM.set(0, 0, 350)); }
   onMissileHit() { if (this.active) this.hp -= 1; }
   gunHit(d) { if (this.active) this.hp -= d; }
 
@@ -130,22 +135,42 @@ export class Cannon {
     if (this.dead) {
       this._deathT += dt;
       if (Math.random() < dt * 6) {
-        _v1.copy(this.pos).add(_v2.set(rand(-60, 60), rand(-10, 30), rand(-60, 60)));
+        _v1.copy(this.pos).add(_v2.set(rand(-180, 180), rand(-30, 90), rand(-180, 180)));
         combat.effects.explosion(_v1, rand(1.5, 3));
       }
       return;
     }
     const player = combat.player;
-    // 炮塔缓慢指向玩家
-    if (this.active && player.alive) {
-      _v1.copy(player.pos).sub(this.model.platform.getWorldPosition(_v2));
+    const bird = combat.allyBird;
+    const aimBird = this.beamCharging > 0 && bird && bird.alive && !bird.falling;
+    // 炮塔缓慢指向目标（锁定巨鸟时光束优先，否则指向玩家）
+    if (this.active && (player.alive || aimBird)) {
+      _v1.copy(aimBird ? bird.pos : player.pos).sub(this.model.platform.getWorldPosition(_v2));
       const yaw = Math.atan2(_v1.x, _v1.z);
       let d = yaw - this.model.turret.rotation.y;
       while (d > Math.PI) d -= TAU;
       while (d < -Math.PI) d += TAU;
-      this.model.turret.rotation.y += d * damp(0.6, dt);
+      this.model.turret.rotation.y += d * damp(aimBird ? 1.4 : 0.6, dt);
     }
-    // 充能/开火
+    // 光束充能/发射（周期性打击我方巨鸟——核心倒计时压力）
+    if (this.active && this.alive && bird && bird.alive && !bird.falling) {
+      this.beamT -= dt;
+      if (this.beamT <= 0 && this.beamCharging <= 0) {
+        this.beamCharging = 3.0;
+        combat.events.onKill('⚠ 巨炮正在锁定我方巨鸟！');
+      }
+      if (this.beamCharging > 0) {
+        this.beamCharging -= dt;
+        const bs = 1 + (3.0 - this.beamCharging) * 0.55;
+        this.model.core.scale.set(bs, bs, bs);
+        if (this.beamCharging <= 0) {
+          this.model.core.scale.set(1, 1, 1);
+          combat.cannonBeamFire(this);
+          this.beamT = rand(15, 21);
+        }
+      }
+    }
+    // 充能/开火（对玩家齐射）
     if (this.active && this.alive && player.alive) {
       this.chargeT -= dt;
       if (this.chargeT <= 0 && this.charging <= 0) {
@@ -210,6 +235,74 @@ export class CannonShell {
     this.alive = false;
     this.scene.remove(this.mesh);
     this.trail.dispose(this.scene);
+  }
+}
+
+// ============ 我方巨鸟（远处盘旋支援；巨炮光束的目标——被击坠则任务失败）============
+export class AllyBird {
+  constructor(scene) {
+    const m = buildArsenalBird(0xb9c1cb);
+    this.model = m;
+    this.group = m.group;
+    scene.add(this.group);
+    this.scene = scene;
+    this.angle = rand(TAU);
+    this.radius = 4600;
+    this.alt = 1650;
+    this.maxHp = 100;
+    this.hp = this.maxHp;
+    this.alive = true;
+    this.falling = false;
+    this.fallT = 0;
+    this.smokeT = 0;
+    this.vel = new THREE.Vector3();
+    this.name = 'ALLY 巨鸟';
+  }
+  get pos() { return this.group.position; }
+  beamHit(d) { if (this.alive && !this.falling) this.hp -= d; }
+
+  update(dt, combat) {
+    const g = this.group;
+    for (const p of this.model.props) p.rotation.z += dt * 28;
+    const bl = Math.sin(performance.now() * 0.004) > 0.4;
+    for (const b of this.model.beacons) b.visible = bl;
+
+    if (this.falling) {
+      this.fallT += dt;
+      g.position.y -= (26 + this.fallT * 48) * dt;
+      g.position.addScaledVector(this.vel, dt * 0.3);
+      g.rotateZ(dt * 0.4);
+      g.rotateX(dt * 0.18);
+      if (g.position.y < 16) {
+        combat.effects.explosion(g.position, 7, 1.5);
+        this.scene.remove(g);
+        this.alive = false;
+        combat.onAllyBirdDown();
+      }
+      return;
+    }
+    if (this.hp <= 0) {
+      this.falling = true;
+      combat.events.onKill('我方巨鸟被光束击中，正在坠落！');
+      return;
+    }
+    // 远方盘旋
+    this.angle += 30 / this.radius * dt;
+    const x = Math.cos(this.angle) * this.radius;
+    const z = Math.sin(this.angle) * this.radius;
+    this.vel.set(-Math.sin(this.angle), 0, Math.cos(this.angle)).multiplyScalar(30);
+    g.position.set(x, this.alt + Math.sin(this.angle * 3) * 40, z);
+    g.quaternion.setFromAxisAngle(UP, -this.angle);
+    g.rotateZ(0.08);
+    // 重伤冒烟
+    if (this.hp < this.maxHp * 0.6) {
+      this.smokeT -= dt;
+      if (this.smokeT <= 0) {
+        this.smokeT = 0.22;
+        _v1.set(rand(40, 110) * (Math.random() < 0.5 ? -1 : 1), 2, randSpread(30)).applyQuaternion(g.quaternion).add(g.position);
+        combat.effects.smokePuff(_v1, _v2.copy(this.vel).multiplyScalar(0.4));
+      }
+    }
   }
 }
 

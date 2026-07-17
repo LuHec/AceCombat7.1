@@ -1,6 +1,7 @@
-// 世界：黄昏天空、程序海洋、岛屿地形、宇宙电梯(轨道电梯 Lighthouse)、Raymarch 体积云
+// 世界：黄昏天空、程序海洋、群岛(M1)/沙漠基地(M2)地形、宇宙电梯(Lighthouse)、Raymarch 体积云
 import * as THREE from 'three';
-import { fbm2, fbm3, noise3, clamp, lerp, rand, randSpread } from './utils.js';
+import { fbm2, fbm3, clamp, lerp, rand, randSpread } from './utils.js';
+import { buildBase } from './models.js';
 
 export const SUN_DIR = new THREE.Vector3(-0.86, 0.15, -0.42).normalize();
 const _stormSky = new THREE.Color(0x46505f);
@@ -13,24 +14,20 @@ export function cloudMapCoverage(x, z) {
   let c = fbm2(x * 0.00003 + 11.7, z * 0.00003 + 4.2, 4);
   return clamp((c - 0.38) * 2.4, 0, 1);
 }
-// 供主循环做穿云检测（与 shader 同公式，form = [云顶, 密度, 侵蚀, 垂直拉伸]）
+// 供主循环做穿云检测（JS 近似镜像 shader 公式，form = [云顶, 密度, 侵蚀, 垂直拉伸]）
+const _ss = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 export function cloudDensityAt(x, y, z, time, coverage, form) {
   if (y < CLOUD_BASE || y > CLOUD_TOP) return 0;
   const map = cloudMapCoverage(x, z);
-  const w = clamp(map * 0.62 + (coverage - 0.45) * 1.05, 0, 1);
-  if (w < 0.04) return 0;
-  const qx = (x + time * 9) * 0.000075, qy = y * form[3] * 0.000075, qz = z * 0.000075;
-  const base = fbm3(qx, qy, qz, 4);
-  let d = base - (1.06 - w * 0.92);
-  if (d <= 0) return 0;
+  const cov = clamp(map * 0.7 + (coverage - 0.4) * 1.0, 0, 1);
+  if (cov < 0.03) return 0;
   const h = (y - CLOUD_BASE) / (CLOUD_TOP - CLOUD_BASE);
-  const grad = clamp(h / 0.07, 0, 1) * (1 - clamp((h - form[0]) / (1 - form[0]), 0, 1));
-  d *= grad * (0.55 + 1.5 * h);
-  if (d < 0.28) {
-    const rid = 1 - Math.abs(2 * noise3(x * 0.00085 + time * 2, y * 0.00085, z * 0.00085) - 1);
-    d -= (0.28 - d) * rid * form[2];
-  }
-  return clamp(d * form[1], 0, 1.6);
+  const s = 0.00022 * 48;                       // 近似镜像 3D 纹理频率
+  const pw = fbm3((x + time * 12) * s, (y / Math.max(form[3], 0.15)) * s, z * s, 4);
+  const base = clamp((pw - (1 - cov)) / Math.max(cov, 0.05), 0, 1);
+  if (base <= 0) return 0;
+  const shape = _ss(0, 0.10, h) * (1 - _ss(form[0], Math.min(form[0] + 0.30, 1), h));
+  return clamp(base * shape * form[1] * 0.7, 0, 1.6);
 }
 
 // 生成云图纹理（256²，覆盖 ±50km）
@@ -57,54 +54,121 @@ function makeCloudMapTexture() {
   return tex;
 }
 
-// 巨炮地井位置（第二关）
-export const SILO_POS = new THREE.Vector3(5400, 0, 4400);
+// ============ 3D 噪声纹理（体积云形状/侵蚀的采样源，替代逐像素 sin-hash）============
+function ihash(x, y, z) {
+  let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(z, 1274126177);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+// 可平铺 value noise（周期 P 个晶格）
+function vnoiseT(x, y, z, P) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+  const x0 = ((xi % P) + P) % P, x1 = (x0 + 1) % P;
+  const y0 = ((yi % P) + P) % P, y1 = (y0 + 1) % P;
+  const z0 = ((zi % P) + P) % P, z1 = (z0 + 1) % P;
+  const c000 = ihash(x0, y0, z0), c100 = ihash(x1, y0, z0), c010 = ihash(x0, y1, z0), c110 = ihash(x1, y1, z0);
+  const c001 = ihash(x0, y0, z1), c101 = ihash(x1, y0, z1), c011 = ihash(x0, y1, z1), c111 = ihash(x1, y1, z1);
+  return lerp(
+    lerp(lerp(c000, c100, u), lerp(c010, c110, u), v),
+    lerp(lerp(c001, c101, u), lerp(c011, c111, u), v), w);
+}
+function vfbmT(x, y, z, P, oct) {
+  let v = 0, a = 0.5, f = 1, p = P;
+  for (let i = 0; i < oct; i++) { v += a * vnoiseT(x * f, y * f, z * f, p); a *= 0.5; f *= 2; p *= 2; }
+  return v;
+}
+// 可平铺 Worley（反相 F1：特征点处为 1，N = 每轴单元数）
+function worleyT(x, y, z, N) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  let best = 9e9;
+  for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const cx = (((xi + dx) % N) + N) % N, cy = (((yi + dy) % N) + N) % N, cz = (((zi + dz) % N) + N) % N;
+    const px = cx + ihash(cx, cy, cz);
+    const py = cy + ihash(cx + 57, cy + 23, cz + 91);
+    const pz = cz + ihash(cx + 113, cy + 71, cz + 37);
+    const ddx = px - x, ddy = py - y, ddz = pz - z;
+    const dd = ddx * ddx + ddy * ddy + ddz * ddz;
+    if (dd < best) best = dd;
+  }
+  return clamp(1 - Math.sqrt(best), 0, 1);
+}
+// 64³ RGBA：R = Perlin-Worley（基础云形）；G/B/A = Worley 4/8/16 单元（边缘侵蚀细节）
+function makeNoiseTexture() {
+  const S = 64;
+  const data = new Uint8Array(S * S * S * 4);
+  let o = 0;
+  for (let z = 0; z < S; z++) {
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const u = (x + 0.5) / S, v = (y + 0.5) / S, w = (z + 0.5) / S;
+        const per = vfbmT(u * 4, v * 4, w * 4, 4, 4);
+        const w1 = worleyT(u * 4, v * 4, w * 4, 4);
+        const w2 = worleyT(u * 8, v * 8, w * 8, 8);
+        const w3 = worleyT(u * 16, v * 16, w * 16, 16);
+        const wf = w1 * 0.55 + w2 * 0.30 + w3 * 0.15;
+        // 宽分布 Perlin-Worley：覆盖率 ≈ cov 线性响应，便于天气控制
+        const pw = clamp((wf - 0.45) * 2.0 + (per - 0.45) * 1.6 + 0.5, 0, 1);
+        data[o++] = Math.round(pw * 255);
+        data[o++] = Math.round(w1 * 255);
+        data[o++] = Math.round(w2 * 255);
+        data[o++] = Math.round(w3 * 255);
+      }
+    }
+  }
+  const tex = new THREE.Data3DTexture(data, S, S, S);
+  tex.format = THREE.RGBAFormat;
+  tex.type = THREE.UnsignedByteType;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = tex.wrapR = THREE.RepeatWrapping;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// 巨炮地井位置（第二关，沙漠基地中心）
+export const SILO_POS = new THREE.Vector3(0, 0, 0);
 
 // 共享云场 GLSL（调用前需声明 uniform float time, coverage; uniform vec4 cloudForm; uniform sampler2D cloudMap; 阴影函数另需 uniform vec3 sunDir）
 export const CLOUD_GLSL = `
-  float hashC(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
-  float noiseC(vec3 p){
-    vec3 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float n000 = hashC(i), n100 = hashC(i + vec3(1.0, 0.0, 0.0));
-    float n010 = hashC(i + vec3(0.0, 1.0, 0.0)), n110 = hashC(i + vec3(1.0, 1.0, 0.0));
-    float n001 = hashC(i + vec3(0.0, 0.0, 1.0)), n101 = hashC(i + vec3(1.0, 0.0, 1.0));
-    float n011 = hashC(i + vec3(0.0, 1.0, 1.0)), n111 = hashC(i + vec3(1.0, 1.0, 1.0));
-    return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-               mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
-  }
-  float fbmC(vec3 p){
-    float v = 0.0, a = 0.5;
-    for (int k = 0; k < 4; k++){ v += a * noiseC(p); p *= 2.13; a *= 0.5; }
-    return v;
-  }
-  // 云密度场：云图决定地理分布；cloudForm 随天气塑形（云顶/密度/侵蚀/垂直拉伸）
-  float cloudField(vec3 p){
+  uniform highp sampler3D uNoise;
+  // 云密度（廉价版：无边缘侵蚀，供自阴影采样）
+  float cloudBase(vec3 p){
     if (p.y < 480.0 || p.y > 4200.0) return 0.0;
     float map = texture2D(cloudMap, p.xz * 0.00001 + 0.5).r;
-    float w = clamp(map * 0.62 + (coverage - 0.45) * 1.05, 0.0, 1.0);
-    if (w < 0.04) return 0.0;
-    vec3 q = vec3(p.x + time * 9.0, p.y * cloudForm.w, p.z) * 0.000075;
-    float base = fbmC(q);
-    float d = base - (1.06 - w * 0.92);
+    float cov = clamp(map * 0.7 + (coverage - 0.4) * 1.0, 0.0, 1.0);
+    if (cov < 0.03) return 0.0;
+    float h = (p.y - 480.0) / 3720.0;
+    // 基础云形：低频 Perlin-Worley（4.5km 大云团），cloudForm.w 控制垂直拉伸
+    vec3 q = vec3(p.x + time * 12.0, p.y / max(cloudForm.w, 0.15), p.z) * 0.00022;
+    float pw = texture2D(uNoise, q).r;
+    float base = clamp((pw - (1.0 - cov)) / max(cov, 0.05), 0.0, 1.0);   // coverage 阈值 → 孤立云朵
+    // 积云塑形：平底 + 圆顶（cloudForm.x = 顶部开始衰减的相对高度）
+    float shape = smoothstep(0.0, 0.10, h) * (1.0 - smoothstep(cloudForm.x, min(cloudForm.x + 0.30, 1.0), h));
+    return base * shape;
+  }
+  // 云密度场：积云塔 + 花椰菜边缘侵蚀（cloudForm.z = 侵蚀强度, cloudForm.y = 消光倍增）
+  float cloudField(vec3 p){
+    float d = cloudBase(p);
     if (d <= 0.0) return 0.0;
     float h = (p.y - 480.0) / 3720.0;
-    float grad = smoothstep(0.0, 0.07, h) * (1.0 - smoothstep(cloudForm.x, 1.0, h));
-    d *= grad * (0.55 + 1.5 * h);        // 顶部蓬松的积云塔
-    if (d < 0.28){
-      float rid = 1.0 - abs(2.0 * noiseC(p * 0.00085 + vec3(time * 2.0, 0.0, 0.0)) - 1.0);
-      d -= (0.28 - d) * rid * cloudForm.z;
-    }
+    vec3 e = vec3(p.x + time * 36.0, p.y * 0.8, p.z) * 0.0007;
+    vec3 w = texture2D(uNoise, e).gba;
+    float worley = w.x * 0.55 + w.y * 0.30 + w.z * 0.15;
+    d -= worley * cloudForm.z * (1.0 - h * 0.55) * clamp(0.5 - d, 0.0, 0.5);
     return clamp(d * cloudForm.y, 0.0, 1.6);
   }
-  // 云对地面的投影：直接采样云场本体 → 锐利、跟随云形的影子
+  // 云对地面的投影：云图沿太阳方向偏移采样（2.5D 近似，廉价且稳定）
   float cloudGroundShadow(vec2 xz){
-    vec3 sd = normalize(vec3(sunDir.x, 0.55, sunDir.z));
-    vec3 bp = vec3(xz.x, 0.0, xz.y);
-    float s = cloudField(bp + sd * 900.0) * 0.7
-            + cloudField(bp + sd * 2200.0) * 0.3;
-    float sh = smoothstep(0.12, 0.45, s);
-    return 1.0 - sh * 0.78 * (0.3 + 0.7 * coverage);
+    vec2 off = sunDir.xz / max(sunDir.y, 0.3) * 1500.0;
+    float m1 = texture2D(cloudMap, (xz + off) * 0.00001 + 0.5).r;
+    float m2 = texture2D(cloudMap, (xz + off * 2.3) * 0.00001 + 0.5).r;
+    float s = clamp((m1 * 0.72 + m2 * 0.28) * 0.7 + (coverage - 0.4) * 1.0, 0.0, 1.0);
+    float sh = smoothstep(0.2, 0.7, s);
+    return 1.0 - sh * 0.7 * (0.35 + 0.65 * coverage);
   }
 `;
 
@@ -117,7 +181,14 @@ const ISLANDS = [
   { x: -700, z: 6400, r: 1100, h: 90 },
 ];
 
+// 地形按任务分发：M1 群岛 / M2 沙漠（模块级模式，Player/Drone/Missile 共用同一入口）
+let terrainMode = 'isles';
+export function setTerrainMode(m) { terrainMode = m; }
 export function terrainHeight(x, z) {
+  return terrainMode === 'desert' ? terrainDesert(x, z) : terrainIsles(x, z);
+}
+
+function terrainIsles(x, z) {
   let h = -30;
   for (const isl of ISLANDS) {
     const dx = x - isl.x, dz = z - isl.z;
@@ -135,6 +206,18 @@ export function terrainHeight(x, z) {
   // 水下部分加速下沉，避免远处海床与海面谈深度冲突（z-fighting）
   if (h < 0) h = Math.max(h * 4, -30);
   return h;
+}
+
+// M2 沙漠：低频大沙丘 + 细碎起伏，7km 外隆起远山屏障，基地 1.6km 内压平
+function terrainDesert(x, z) {
+  const r = Math.hypot(x, z);
+  let h = fbm2(x * 0.00026 + 3.1, z * 0.00026 + 8.7, 4) * 120;
+  h += fbm2(x * 0.0017 + 11.3, z * 0.0017 + 5.9, 3) * 15;
+  const m = clamp((r - 6800) / 3600, 0, 1);
+  h += m * m * 520 * (0.4 + 1.1 * fbm2(x * 0.00075 + 9.2, z * 0.00075 + 2.8, 4));
+  const flat = clamp((r - 1600) / 1900, 0, 1);
+  const f = flat * flat * (3 - 2 * flat);
+  return lerp(9, h, f);
 }
 
 export class World {
@@ -156,7 +239,7 @@ export class World {
       storm: { value: 0 },
       time: { value: 0 },
       coverage: { value: 0.34 },
-      cloudForm: { value: new THREE.Vector4(0.5, 2.2, 0.7, 0.75) },
+      cloudForm: { value: new THREE.Vector4(0.42, 1.5, 0.85, 0.85) },
       fogColor: { value: new THREE.Color(0xd9ab8a) },
       fogDensity: { value: 0.0001 },
       zenith: { value: new THREE.Color(0x1e2a4a) },
@@ -182,7 +265,7 @@ export class World {
           vec3 hazS = mix(haze, vec3(0.36, 0.39, 0.46), storm);
           vec3 col = mix(horS, zenS, pow(clamp(d.y, 0.0, 1.0), 0.48));
           col = mix(col, hazS, smoothstep(0.30, 0.02, abs(d.y)) * 0.75);
-          col += sunColor * (pow(sd, 420.0)*2.2 + pow(sd, 26.0)*0.38 + pow(sd, 4.0)*0.16) * (1.0 - storm*0.85);
+          col += sunColor * (pow(sd, 420.0)*1.9 + pow(sd, 26.0)*0.20 + pow(sd, 4.0)*0.07) * (1.0 - storm*0.85);
           col *= (1.0 - storm*0.25);
           col += vec3(0.85, 0.9, 1.0) * flash;
           gl_FragColor = vec4(col, 1.0);
@@ -193,8 +276,9 @@ export class World {
     this.sky.frustumCulled = false;
     scene.add(this.sky);
 
-    // ---- 云图纹理 ----
+    // ---- 云图纹理 + 3D 噪声纹理 ----
     this.cloudMapTex = makeCloudMapTexture();
+    this.noiseTex = makeNoiseTexture();
 
     // ---- 海洋 ----
     this.oceanUniforms = {
@@ -209,6 +293,7 @@ export class World {
       coverage: this.skyUniforms.coverage,
       cloudForm: this.skyUniforms.cloudForm,
       cloudMap: { value: this.cloudMapTex },
+      uNoise: { value: this.noiseTex },
     };
     const oceanMat = new THREE.ShaderMaterial({
       uniforms: this.oceanUniforms,
@@ -241,7 +326,7 @@ export class World {
           vec3 V = normalize(cameraPosition - vWorld);
           vec3 H = normalize(sunDir + V);
           float ndh = max(dot(n, H), 0.0);
-          float spec = pow(ndh, 300.0)*2.8 + pow(ndh, 30.0)*0.20;
+          float spec = pow(ndh, 300.0)*1.8 + pow(ndh, 30.0)*0.12;
           float fres = pow(1.0 - max(dot(V, n), 0.0), 3.0);
           vec3 col = mix(deepColor, skyColor, clamp(fres*0.85 + 0.07, 0.0, 1.0));
           col += sunColor * spec;
@@ -252,23 +337,35 @@ export class World {
           gl_FragColor = vec4(col, 1.0);
         }`,
     });
-    const ocean = new THREE.Mesh(new THREE.PlaneGeometry(120000, 120000), oceanMat);
+    const ocean = this.ocean = new THREE.Mesh(new THREE.PlaneGeometry(120000, 120000), oceanMat);
     ocean.rotation.x = -Math.PI / 2;
     ocean.position.y = 0;
     scene.add(ocean);
 
-    // ---- 岛屿地形 ----
-    this._buildTerrain();
+    // ---- 地形（M1 群岛 / M2 沙漠基地，启动各建一份，setMission 切换）----
+    this._buildTerrains();
 
     // ---- 宇宙电梯 ----
     this._buildElevator();
 
     this.flashValue = 0;
     this._sunBase = 2.4;
+    this.mission = 1;
   }
 
-  _buildTerrain() {
-    const size = 17000, seg = 210;
+  // 任务地图切换（M1 群岛 / M2 沙漠基地），只切可见性，零重建
+  setMission(m) {
+    this.mission = m;
+    const isles = m !== 2;
+    setTerrainMode(isles ? 'isles' : 'desert');
+    this.islesGroup.visible = isles;
+    this.desertGroup.visible = !isles;
+    this.elevator.visible = isles;
+    this.ocean.visible = isles;
+  }
+
+  // 地形网格（mode: 'isles' | 'desert'），含云的地面阴影注入
+  _makeTerrainMesh(mode, size, seg) {
     const geo = new THREE.PlaneGeometry(size, size, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
@@ -276,17 +373,28 @@ export class World {
     const cSand = new THREE.Color(0xa89a70), cGrass = new THREE.Color(0x55703c),
       cForest = new THREE.Color(0x33502e), cRock = new THREE.Color(0x7d7a74),
       cSea = new THREE.Color(0x3d4a42);
+    const dSand = new THREE.Color(0xcaa96e), dSandD = new THREE.Color(0xb28a54),
+      dRock = new THREE.Color(0x8a7358), dMtn = new THREE.Color(0x6e655c);
     const c = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i), z = pos.getZ(i);
-      const h = terrainHeight(x, z);
+      const h = mode === 'desert' ? terrainDesert(x, z) : terrainIsles(x, z);
       pos.setY(i, h);
-      if (h < 0.5) c.copy(cSea);
-      else if (h < 4) c.copy(cSand);
-      else if (h < 46) c.copy(cGrass).lerp(cForest, h / 46);
-      else if (h < 120) c.copy(cForest).lerp(cRock, (h - 46) / 76);
-      else c.copy(cRock);
-      c.offsetHSL(0, 0, randSpread(0.03));
+      if (mode === 'desert') {
+        const r = Math.hypot(x, z);
+        if (r > 6800) c.copy(dMtn).lerp(dRock, clamp(fbm2(x * 0.001 + 4.2, z * 0.001 + 9.7, 3), 0, 1));
+        else if (h < 22) c.copy(dSand);
+        else if (h < 65) c.copy(dSand).lerp(dSandD, (h - 22) / 43);
+        else c.copy(dSandD).lerp(dRock, clamp((h - 65) / 90, 0, 1));
+        c.offsetHSL(0, 0, randSpread(0.035));
+      } else {
+        if (h < 0.5) c.copy(cSea);
+        else if (h < 4) c.copy(cSand);
+        else if (h < 46) c.copy(cGrass).lerp(cForest, h / 46);
+        else if (h < 120) c.copy(cForest).lerp(cRock, (h - 46) / 76);
+        else c.copy(cRock);
+        c.offsetHSL(0, 0, randSpread(0.03));
+      }
       colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -300,6 +408,7 @@ export class World {
       shader.uniforms.cloudForm = skyU.cloudForm;
       shader.uniforms.sunDir = skyU.sunDir;
       shader.uniforms.cloudMap = { value: this.cloudMapTex };
+      shader.uniforms.uNoise = { value: this.noiseTex };
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vCShPos;')
         .replace('#include <project_vertex>', '#include <project_vertex>\nvCShPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
@@ -307,8 +416,13 @@ export class World {
         .replace('#include <common>', '#include <common>\nuniform float time;\nuniform float coverage;\nuniform vec4 cloudForm;\nuniform vec3 sunDir;\nuniform sampler2D cloudMap;\nvarying vec3 vCShPos;\n' + CLOUD_GLSL)
         .replace('#include <dithering_fragment>', 'gl_FragColor.rgb *= cloudGroundShadow(vCShPos.xz);\n#include <dithering_fragment>');
     };
-    const terrain = new THREE.Mesh(geo, mat);
-    this.scene.add(terrain);
+    return new THREE.Mesh(geo, mat);
+  }
+
+  _buildTerrains() {
+    // ---- M1 群岛（地形 + 树林 + 城市）----
+    this.islesGroup = new THREE.Group();
+    this.islesGroup.add(this._makeTerrainMesh('isles', 17000, 210));
 
     // 树木（实例化圆锥）
     const treeGeo = new THREE.ConeGeometry(3.2, 13, 6);
@@ -318,7 +432,7 @@ export class World {
     let n = 0;
     for (let tries = 0; tries < 4000 && n < 600; tries++) {
       const x = randSpread(13000), z = randSpread(13000);
-      const h = terrainHeight(x, z);
+      const h = terrainIsles(x, z);
       if (h < 7 || h > 105) continue;
       const sc = rand(0.6, 1.7);
       s.set(sc, sc * rand(0.9, 1.5), sc);
@@ -327,7 +441,7 @@ export class World {
       trees.setMatrixAt(n++, m4);
     }
     trees.count = n;
-    this.scene.add(trees);
+    this.islesGroup.add(trees);
 
     // 电梯岛沿岸小城
     const cityG = new THREE.Group();
@@ -335,7 +449,7 @@ export class World {
     for (let i = 0; i < 70; i++) {
       const ang = rand(Math.PI * 2), r = rand(260, 760);
       const x = Math.cos(ang) * r, z = Math.sin(ang) * r;
-      const h = terrainHeight(x, z);
+      const h = terrainIsles(x, z);
       if (h < 2 || h > 40) continue;
       const w = rand(14, 34), bh = rand(10, 62), d = rand(14, 34);
       const b = new THREE.Mesh(new THREE.BoxGeometry(w, bh, d), bMat);
@@ -343,7 +457,18 @@ export class World {
       b.rotation.y = rand(Math.PI);
       cityG.add(b);
     }
-    this.scene.add(cityG);
+    this.islesGroup.add(cityG);
+    this.scene.add(this.islesGroup);
+
+    // ---- M2 沙漠军事基地（地形 + 基地设施，默认隐藏）----
+    this.desertGroup = new THREE.Group();
+    this.desertGroup.add(this._makeTerrainMesh('desert', 24000, 200));
+    const base = buildBase();
+    base.group.position.y = 9;              // 基地平台压平高度
+    this.desertGroup.add(base.group);
+    this.baseRadars = base.radars;
+    this.desertGroup.visible = false;
+    this.scene.add(this.desertGroup);
   }
 
   _buildElevator() {
@@ -442,6 +567,7 @@ export class World {
     this.skyUniforms.time.value = t;
     this.sky.position.copy(camera.position);
     for (const r of this.rings) r.rotation.z += dt * 0.05;
+    if (this.baseRadars) for (const r of this.baseRadars) r.rotation.y += dt * 0.7;
     const pulse = (Math.sin(t * 2.4) > 0.55) ? 1 : 0.12;
     for (const b of this.beacons) b.material.color.setRGB(1 * pulse + 0.15, 0.2 * pulse, 0.14 * pulse);
     this.elevatorCore.material.color.setHSL(0.52, 1, 0.55 + 0.2 * Math.sin(t * 1.7));

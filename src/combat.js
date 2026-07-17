@@ -1,16 +1,37 @@
 // 战斗：导弹（比例导引）、机炮、MQ-101 无人机与敌战斗机、军械巨鸟、第二关（SAM/巨炮/僚机）、爆炸特效池
 import * as THREE from 'three';
 import { buildDrone, buildArsenalBird, buildMissile, buildAircraft, ENEMY_DEF } from './models.js';
-import { SAMSite, Silo, CannonShell, Wingman } from './mission2.js';
+import { SAMSite, Silo, CannonShell, Wingman, AllyBird } from './mission2.js';
 import { RibbonTrail, makeGlowTexture, clamp, lerp, rand, randSpread, TAU } from './utils.js';
 import { terrainHeight, SILO_POS } from './world.js';
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
 const UP = new THREE.Vector3(0, 1, 0);
+const _vFwd = new THREE.Vector3(0, 0, 1);
 
 function randVec(s) {
   return new THREE.Vector3(randSpread(s), randSpread(s), randSpread(s));
+}
+
+// 巨炮光束网格（原点底端、向 +Y 延伸的单位圆柱，加色发光）
+function makeBeamMesh(scene, r, color) {
+  const geo = new THREE.CylinderGeometry(r, r, 1, 10, 1, true);
+  geo.translate(0, 0.5, 0);
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 7;
+  scene.add(mesh);
+  return mesh;
+}
+function aimBeam(mesh, from, to) {
+  mesh.position.copy(from);
+  _v3.copy(to).sub(from);
+  mesh.scale.set(1, _v3.length(), 1);
+  mesh.quaternion.setFromUnitVectors(UP, _v3.normalize());
+  mesh.visible = true;
 }
 
 // ============ 特效池 ============
@@ -94,7 +115,7 @@ export class Effects {
 const MISSILE_MAX_SPEED = 850;
 
 export class Missile {
-  constructor(scene, effects, owner, target, pos, dir, speed0, turnRate, damage) {
+  constructor(scene, effects, owner, target, pos, dir, speed0, turnRate, damage, life = 5) {
     this.scene = scene;
     this.effects = effects;
     this.owner = owner;           // 'player' | 'enemy'
@@ -103,14 +124,14 @@ export class Missile {
     this.speed = speed0;
     this.turnRate = turnRate;
     this.damage = damage;
-    this.life = 5;
+    this.life = life;
     this.alive = true;
     this.guided = true;
     this._closing = false;
     this._prevDist = Infinity;
     this.mesh = buildMissile();
     this.mesh.position.copy(pos);
-    this.mesh.quaternion.setFromUnitVectors(_v1.set(0, 0, 1), dir);
+    this.mesh.quaternion.setFromUnitVectors(_vFwd, dir);   // dir 可能就是 _v1，勿再复用 _v1
     scene.add(this.mesh);
     this.trail = new RibbonTrail(scene, 42, 0.9);
   }
@@ -135,6 +156,11 @@ export class Missile {
       // 脱靶判定：开始远离即失去制导（被急转甩掉）
       if (dist < this._prevDist) this._closing = true;
       else if (this._closing && dist > 60) this.guided = false;
+      // 甩脱判定：逼近后被机动甩到侧后方（视线角 >~70°）→ 脱锁
+      if (this.guided && this._closing && dist > 100) {
+        _v2.copy(this.target.pos).sub(pos).normalize();
+        if (this.dir.angleTo(_v2) > 1.2) this.guided = false;
+      }
       this._prevDist = dist;
     }
     this.speed = Math.min(MISSILE_MAX_SPEED, this.speed + 320 * dt);
@@ -413,16 +439,26 @@ export class CombatManager {
     this._trI = 0;
 
     if (mission === 2) {
-      // ---- 第二关：SAM 设施 + 地井巨炮 + 僚机 + 敌战斗机 ----
+      // ---- 第二关：SAM 环防 + 地井巨炮 + 僚机 + 我方巨鸟 + 敌战斗机 ----
       this.bird = null;
-      const samPos = [[-4100, 2500], [3900, -4100], [-800, 6300], [4900, 3950]];
-      for (const [x, z] of samPos) this.groundTargets.push(new SAMSite(scene, x, z));
+      for (let i = 0; i < 4; i++) {
+        const a = i * Math.PI / 2 + Math.PI / 4 + randSpread(0.3);
+        const r = rand(2100, 2800);
+        this.groundTargets.push(new SAMSite(scene, Math.cos(a) * r, Math.sin(a) * r));
+      }
       this.silo = new Silo(scene, audio);
+      this.allyBird = new AllyBird(scene);
       this.wingmen = [new Wingman(scene, player, 1), new Wingman(scene, player, -1)];
       this.stage = 'sam';
       for (let i = 0; i < 3; i++) this._spawnFighter(rand(2000, 3500));
+      // 巨炮光束网格（充能时红色瞄准线，发射时青白光束）
+      this.beamSight = makeBeamMesh(scene, 0.9, 0xff4030);
+      this.beamCore = makeBeamMesh(scene, 2.4, 0xd8faff);
+      this.beamGlow = makeBeamMesh(scene, 10, 0x3fd8ff);
+      this.beamFade = 1;
     } else {
       this.bird = new ArsenalBird(scene);
+      this.allyBird = null;
       this.spawnWave(5);
     }
   }
@@ -465,7 +501,7 @@ export class CombatManager {
   enemyFire(drone) {
     _v1.copy(drone.fwd);
     const m = new Missile(this.scene, this.effects, 'enemy', this.playerTarget,
-      drone.pos, _v1, drone.speed + 220, 1.55, 30);
+      drone.pos, _v1, drone.speed + 220, 1.35, 30, 3.5);
     this.missiles.push(m);
     this.audio.missileFire();
   }
@@ -474,7 +510,7 @@ export class CombatManager {
     _v1.copy(sam.pos); _v1.y += 6;
     _v2.copy(this.player.pos).sub(_v1).normalize();
     const m = new Missile(this.scene, this.effects, 'enemy', this.playerTarget,
-      _v1, _v2, 520, 1.55, 30);
+      _v1, _v2, 520, 1.35, 30, 5.5);
     this.missiles.push(m);
     this.audio.missileFire();
     this.events.onKill('SAM 导弹来袭！');
@@ -490,11 +526,27 @@ export class CombatManager {
   }
 
   cannonFire(cannon) {
-    _v1.copy(cannon.pos);
-    const lead = cannon.pos.distanceTo(this.player.pos) / 520 * 0.85;
+    _v1.copy(cannon.muzzle);
+    const lead = _v1.distanceTo(this.player.pos) / 520 * 0.85;
     _v2.copy(this.player.vel).multiplyScalar(lead).add(this.player.pos);
     this.shells.push(new CannonShell(this.scene, this.effects, _v1, _v2));
     this.audio.explosion(0.8);
+  }
+
+  // 巨炮光束打击我方巨鸟
+  cannonBeamFire(cannon) {
+    const bird = this.allyBird;
+    if (!bird || !bird.alive || bird.falling) return;
+    aimBeam(this.beamCore, cannon.muzzle, bird.pos);
+    aimBeam(this.beamGlow, cannon.muzzle, bird.pos);
+    this.beamCore.material.opacity = 0.95;
+    this.beamGlow.material.opacity = 0.55;
+    this.beamSight.visible = false;
+    this.beamFade = 0;
+    bird.beamHit(15 + rand(0, 6));
+    this.effects.explosion(bird.pos, 2.6, 1.2);
+    this.audio.beam();
+    this.events.onKill('我方巨鸟遭巨炮光束打击！');
   }
 
   onCannonReady() {
@@ -511,6 +563,12 @@ export class CombatManager {
     this.killCount++;
     this.events.onKill('摧毁巨炮 +4000');
     setTimeout(() => this.events.onWin(), 2000);
+  }
+
+  onAllyBirdDown() {
+    if (this.silo && !this.silo.cannon.alive) return;   // 巨炮已毁，胜负已分
+    this.events.onKill('我方巨鸟被击坠……');
+    setTimeout(() => this.events.onLose(), 1800);
   }
 
   onStageReady() {}
@@ -585,7 +643,7 @@ export class CombatManager {
     for (const d of this.drones) test(d, 5.5);
     if (this.bird && this.bird.active && this.bird.alive && !this.bird.falling) test(this.bird, 120);
     for (const gt of this.groundTargets) test(gt, 14);
-    if (this.silo && this.silo.cannon.active && this.silo.cannon.alive) test(this.silo.cannon, 100);
+    if (this.silo && this.silo.cannon.active && this.silo.cannon.alive) test(this.silo.cannon, 280);
 
     // 曳光
     const tr = this.tracers[this._trI++ % this.tracers.length];
@@ -649,8 +707,14 @@ export class CombatManager {
     for (let i = this.missiles.length - 1; i >= 0; i--) {
       const m = this.missiles[i];
       m.update(dt);
+      if (m.owner === 'enemy' && m._wasGuided && !m.guided && this._loseMsgT <= 0) {
+        this._loseMsgT = 2.5;
+        this.events.onKill('敌导弹被甩开！');
+      }
+      m._wasGuided = m.guided;
       if (!m.alive) this.missiles.splice(i, 1);
     }
+    this._loseMsgT = Math.max(0, (this._loseMsgT || 0) - dt);
 
     // ---- 第一关：军械巨鸟 ----
     if (this.bird) {
@@ -685,6 +749,20 @@ export class CombatManager {
       }
       for (const w of this.wingmen) w.update(dt, this);
       this.silo.update(dt, this);
+      if (this.allyBird) this.allyBird.update(dt, this);
+      // 光束：充能时红色瞄准线跟踪巨鸟；发射后衰减
+      const cn = this.silo.cannon;
+      if (cn.beamCharging > 0 && this.allyBird && this.allyBird.alive && !this.allyBird.falling) {
+        aimBeam(this.beamSight, cn.muzzle, this.allyBird.pos);
+        this.beamSight.material.opacity = 0.4 + 0.25 * Math.sin(performance.now() * 0.03);
+      } else if (this.beamSight) this.beamSight.visible = false;
+      if (this.beamFade < 1) {
+        this.beamFade += dt * 1.3;
+        const f = Math.max(0, 1 - this.beamFade);
+        this.beamCore.material.opacity = 0.95 * f;
+        this.beamGlow.material.opacity = 0.55 * f;
+        if (this.beamFade >= 1) { this.beamCore.visible = this.beamGlow.visible = false; }
+      }
       for (let i = this.shells.length - 1; i >= 0; i--) {
         const s = this.shells[i];
         s.update(dt, p);
@@ -731,7 +809,9 @@ export class CombatManager {
       }
       if (this.stage === 'reveal') return 'MISSION — 警告：地下设施展开中…';
       if (this.silo.cannon.alive) {
-        return `MISSION — 摧毁巨炮（${Math.max(0, Math.ceil(this.silo.cannon.hp))}/${this.silo.cannon.maxHp}）`;
+        const cn = this.silo.cannon;
+        const birdHp = this.allyBird && this.allyBird.alive ? Math.max(0, Math.ceil(this.allyBird.hp)) : 0;
+        return `MISSION — 摧毁巨炮（${Math.max(0, Math.ceil(cn.hp))}/${cn.maxHp}）· 保护巨鸟（${birdHp}%）`;
       }
       return '';
     }

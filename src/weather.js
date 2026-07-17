@@ -3,10 +3,10 @@ import * as THREE from 'three';
 import { clamp, lerp, rand, randSpread } from './utils.js';
 
 export const WEATHER_STATES = [
-  { key: 'CLEAR',  cov: 0.40, rain: 0,    storm: 0,    fog: 0.00010, fogCol: new THREE.Color(0xd9ab8a), bolt: 0,    form: [0.50, 2.2, 0.70, 0.75] },
-  { key: 'CLOUDY', cov: 0.66, rain: 0,    storm: 0.20, fog: 0.00016, fogCol: new THREE.Color(0xb79b8d), bolt: 0,    form: [0.62, 2.6, 0.55, 0.60] },
-  { key: 'RAIN',   cov: 0.88, rain: 0.65, storm: 0.45, fog: 0.00024, fogCol: new THREE.Color(0x848b9a), bolt: 0.12, form: [0.75, 3.0, 0.40, 0.48] },
-  { key: 'STORM',  cov: 1.00, rain: 1.00, storm: 0.85, fog: 0.00030, fogCol: new THREE.Color(0x646d7d), bolt: 1,    form: [0.85, 3.4, 0.28, 0.38] },
+  { key: 'CLEAR',  cov: 0.40, rain: 0,    storm: 0,    fog: 0.00010, fogCol: new THREE.Color(0xd9ab8a), bolt: 0,    form: [0.42, 1.5, 0.85, 0.85] },
+  { key: 'CLOUDY', cov: 0.66, rain: 0,    storm: 0.20, fog: 0.00016, fogCol: new THREE.Color(0xb79b8d), bolt: 0,    form: [0.55, 1.9, 0.65, 0.62] },
+  { key: 'RAIN',   cov: 0.88, rain: 0.65, storm: 0.45, fog: 0.00024, fogCol: new THREE.Color(0x848b9a), bolt: 0.12, form: [0.72, 2.3, 0.45, 0.50] },
+  { key: 'STORM',  cov: 1.00, rain: 1.00, storm: 0.85, fog: 0.00030, fogCol: new THREE.Color(0x646d7d), bolt: 1,    form: [0.85, 2.7, 0.35, 0.42] },
 ];
 
 const RAIN_N = 2200;

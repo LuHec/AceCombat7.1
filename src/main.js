@@ -20,7 +20,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPrefere
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 0.88;
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 3, 70000);
@@ -29,40 +29,51 @@ camera.position.set(6800, 570, 3720);
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 
-// ---- 深度预渲染（体积云遮挡合成 + 体积光天空掩码）----
+// ---- 深度预渲染（半分辨率：体积云遮挡截断 + 体积光天空掩码）----
+function halfRes() {
+  const dpr = renderer.getPixelRatio();
+  return [Math.max(1, Math.floor(window.innerWidth * dpr / 2)),
+    Math.max(1, Math.floor(window.innerHeight * dpr / 2))];
+}
 function makeDepthRT(w, h) {
   const rt = new THREE.WebGLRenderTarget(w, h);
   rt.depthTexture = new THREE.DepthTexture(w, h);
   return rt;
 }
-let depthRT = makeDepthRT(window.innerWidth, window.innerHeight);
+let [hw, hh] = halfRes();
+let depthRT = makeDepthRT(hw, hh);
+// 云颜色/透射率 RT（半分辨率，HDR）+ 去噪中间 RT
+let cloudRT = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType, depthBuffer: false });
+let cloudRT2 = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType, depthBuffer: false });
 const depthOverride = new THREE.MeshDepthMaterial();
 
-// ---- 体积云 Pass：逐像素深度截断的 Raymarch（散射/透射/自阴影）----
-const cloudPass = new ShaderPass({
+// ---- 体积云 Raymarch（3D 噪声纹理驱动的积云场：散射/透射/自阴影）----
+const cloudMat = new THREE.ShaderMaterial({
   uniforms: {
-    tDiffuse: { value: null },
     tDepth: { value: depthRT.depthTexture },
     camPos: { value: new THREE.Vector3() },
     invView: { value: new THREE.Matrix3() },
     projInfo: { value: new THREE.Vector2(1, 1) },
     zInfo: { value: new THREE.Vector2(3, 70000) },
+    cloudMap: { value: null },
+    uNoise: { value: null },
+    uQuality: { value: 1.0 },
   },
+  depthTest: false, depthWrite: false,
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse, tDepth, cloudMap;
+    uniform sampler2D tDepth, cloudMap;
     uniform vec3 camPos;
     uniform mat3 invView;
     uniform vec2 projInfo, zInfo;
     uniform vec3 sunDir, sunColor, fogColor;
-    uniform float flash, storm, time, coverage, fogDensity;
+    uniform float flash, storm, time, coverage, fogDensity, uQuality;
     uniform vec4 cloudForm;
     varying vec2 vUv;
     ${CLOUD_GLSL}
     float hg(float c, float g){ float g2 = g * g; return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * c, 1.5); }
     float ign(vec2 px){ return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715)))); }
     void main(){
-      vec4 base = texture2D(tDiffuse, vUv);
       float depth = texture2D(tDepth, vUv).x;
       vec2 ndc = vUv * 2.0 - 1.0;
       vec3 rdV = normalize(vec3(ndc.x * projInfo.x, ndc.y * projInfo.y, -1.0));
@@ -87,46 +98,89 @@ const cloudPass = new ShaderPass({
       float T = 1.0;
       if (!skip && t1 > t0){
         float ct = dot(rd, sunDir);
-        float phase = hg(ct, 0.62) * 2.8 + hg(ct, -0.22) * 0.7;   // 双瓣散射相位
-        float step0 = clamp((t1 - t0) / 44.0, 120.0, 900.0);
+        float phase = min(hg(ct, 0.65), 5.0) * 1.6 + hg(ct, -0.25) * 0.5;   // 双瓣散射相位（前向银边，限制爆点）
+        float nSteps = 40.0 * uQuality;
+        float step0 = clamp((t1 - t0) / max(nSteps, 8.0), 110.0, 520.0);
         float t = t0 + ign(gl_FragCoord.xy) * step0;
         float stepL = step0;
-        for (int i = 0; i < 56; i++){
-          if (t > t1 || T < 0.03) break;
+        for (int i = 0; i < 40; i++){
+          if (t > t1 || T < 0.05 || float(i) >= nSteps) break;
           vec3 p = ro + rd * t;
-          float d = cloudField(p);
+          float d = t < 9000.0 ? cloudField(p) : cloudBase(p);   // 远处跳过侵蚀细节
           if (d > 0.01){
-            // 自阴影：沿太阳方向 5 点采样透射率
-            float dl = cloudField(p + sunDir * 80.0)
-                     + cloudField(p + sunDir * 200.0)
-                     + cloudField(p + sunDir * 380.0)
-                     + cloudField(p + sunDir * 620.0)
-                     + cloudField(p + sunDir * 900.0);
-            float lt = exp(-dl * 0.55);          // 直接透射
-            float lt2 = exp(-dl * 0.16) * 0.55;  // 多次散射补光
+            // 自阴影：沿太阳方向 3 点采样（廉价密度，无侵蚀）
+            float dl = cloudBase(p + sunDir * 140.0)
+                     + cloudBase(p + sunDir * 320.0)
+                     + cloudBase(p + sunDir * 560.0);
+            float lt = exp(-dl * 1.1);           // 直接透射
+            float lt2 = exp(-dl * 0.3) * 0.32;   // 多次散射补光
             float h = clamp((p.y - 480.0) / 3720.0, 0.0, 1.0);
-            vec3 amb = mix(vec3(0.32, 0.35, 0.47), vec3(0.98, 0.94, 0.99), h);
-            amb = mix(amb, amb * vec3(1.0, 0.86, 0.72), 0.22);
+            // 环境光强渐变：底部深灰蓝 → 顶部亮白（积云立体感核心）
+            vec3 amb = mix(vec3(0.21, 0.24, 0.31), vec3(0.92, 0.90, 0.87), pow(h, 0.8));
             amb *= (1.0 - storm * 0.55);
-            amb *= (1.0 - 0.42 * clamp(d, 0.0, 1.0));
+            amb *= (1.0 - 0.5 * clamp(d, 0.0, 1.0));
             float powder = 1.0 - exp(-d * 5.0);
-            vec3 cc = amb + sunColor * (lt * phase * 1.55 + lt2 * 0.9) * powder * (1.0 - storm * 0.65);
+            vec3 cc = amb + sunColor * (lt * phase * 0.9 + lt2) * powder * (1.0 - storm * 0.6);
             cc += vec3(0.85, 0.9, 1.0) * flash * 1.7;
-            float fogF = 1.0 - exp(-fogDensity * fogDensity * t * t);
+            float fogF = 1.0 - exp(-fogDensity * fogDensity * t * t * 0.35);   // 云比地表更抗雾，远处云形仍可读
             cc = mix(cc, fogColor, fogF);
-            float a = 1.0 - exp(-d * stepL * 0.055);
+            float a = 1.0 - exp(-d * stepL * 0.03);
             col += cc * a * T;
             T *= 1.0 - a;
           }
           t += stepL;
-          stepL *= 1.11;
+          stepL *= 1.07;
         }
       }
-      gl_FragColor = vec4(mix(base.rgb, col, 1.0 - T), 1.0);
+      gl_FragColor = vec4(col, T);
     }`,
 });
-cloudPass.uniforms.tDepth.value = depthRT.depthTexture;
-composer.addPass(cloudPass);
+// 全屏四边形（云 RT 渲染）
+const fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const fsScene = new THREE.Scene();
+const fsMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), cloudMat);
+fsScene.add(fsMesh);
+
+// ---- 云去噪（3×3 tent 滤波：消除 raymarch 抖动颗粒，低成本替代时域累积）----
+const blurMat = new THREE.ShaderMaterial({
+  uniforms: {
+    tInput: { value: cloudRT.texture },
+    texel: { value: new THREE.Vector2(1 / hw, 1 / hh) },
+  },
+  depthTest: false, depthWrite: false,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tInput;
+    uniform vec2 texel;
+    varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tInput, vUv) * 4.0;
+      c += (texture2D(tInput, vUv + vec2(texel.x, 0.0)) + texture2D(tInput, vUv - vec2(texel.x, 0.0))
+          + texture2D(tInput, vUv + vec2(0.0, texel.y)) + texture2D(tInput, vUv - vec2(0.0, texel.y))) * 2.0;
+      c += texture2D(tInput, vUv + texel) + texture2D(tInput, vUv - texel)
+         + texture2D(tInput, vUv + vec2(texel.x, -texel.y)) + texture2D(tInput, vUv + vec2(-texel.x, texel.y));
+      gl_FragColor = c / 16.0;
+    }`,
+});
+
+// ---- 合成 Pass：scene × T + cloud ----
+const compositePass = new ShaderPass({
+  uniforms: {
+    tDiffuse: { value: null },
+    tCloud: { value: cloudRT2.texture },
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse, tCloud;
+    varying vec2 vUv;
+    void main(){
+      vec4 base = texture2D(tDiffuse, vUv);
+      vec4 cl = texture2D(tCloud, vUv);
+      gl_FragColor = vec4(base.rgb * cl.a + cl.rgb, 1.0);
+    }`,
+});
+composer.addPass(compositePass);
+compositePass.uniforms.tCloud.value = cloudRT2.texture;   // ShaderPass 会 clone uniforms，纹理须在建后赋值
 
 // ---- 体积光 Pass（God Rays：向太阳屏幕位置的径向散射，用深度掩天空）----
 const godRayPass = new ShaderPass({
@@ -158,35 +212,56 @@ const godRayPass = new ShaderPass({
         acc += s * illum;
         illum *= 0.952;
       }
-      gl_FragColor = vec4(base.rgb + acc * (1.0 / 52.0) * sunVis * 0.85 * sunTint, 1.0);
+      gl_FragColor = vec4(base.rgb + acc * (1.0 / 52.0) * sunVis * 0.5 * sunTint, 1.0);
     }`,
 });
 godRayPass.uniforms.tDepth.value = depthRT.depthTexture;
 composer.addPass(godRayPass);
 
-const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.42, 0.6, 0.85);
+const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.26, 0.6, 0.88);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
-window.addEventListener('resize', () => {
+function resizeAll() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setPixelRatio(renderer.getPixelRatio());   // composer 的像素比独立于 renderer
   composer.setSize(window.innerWidth, window.innerHeight);
+  [hw, hh] = halfRes();
   depthRT.dispose();
-  depthRT = makeDepthRT(window.innerWidth, window.innerHeight);
-  cloudPass.uniforms.tDepth.value = depthRT.depthTexture;
+  cloudRT.dispose();
+  cloudRT2.dispose();
+  depthRT = makeDepthRT(hw, hh);
+  cloudRT = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType, depthBuffer: false });
+  cloudRT2 = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType, depthBuffer: false });
+  cloudMat.uniforms.tDepth.value = depthRT.depthTexture;
+  blurMat.uniforms.tInput.value = cloudRT.texture;
+  blurMat.uniforms.texel.value.set(1 / hw, 1 / hh);
+  compositePass.uniforms.tCloud.value = cloudRT2.texture;
   godRayPass.uniforms.tDepth.value = depthRT.depthTexture;
-});
+}
+window.addEventListener('resize', resizeAll);
+
+// ---- 自适应画质：帧时间持续超标则降 DPR / 云步数（杜绝低配机卡死）----
+const Q_DPR = [Math.min(window.devicePixelRatio, 1.5), 1.15, 0.85];
+const Q_CLOUD = [1.0, 0.75, 0.55];
+let qTier = 0, ftEMA = 16, qTimer = 0;
+function applyQuality() {
+  renderer.setPixelRatio(Q_DPR[qTier]);
+  cloudMat.uniforms.uQuality.value = Q_CLOUD[qTier];
+  resizeAll();
+}
 
 // ============ 系统 ============
 const world = new World(scene);
 const audio = new GameAudio();
 const weather = new Weather(scene, world, audio);
-// 共享世界 uniforms 到云 Pass
+// 共享世界 uniforms 到云材质
 for (const k of ['sunDir', 'sunColor', 'fogColor', 'fogDensity', 'flash', 'storm', 'time', 'coverage', 'cloudForm'])
-  cloudPass.uniforms[k] = world.skyUniforms[k];
-cloudPass.uniforms.cloudMap = { value: world.cloudMapTex };
+  cloudMat.uniforms[k] = world.skyUniforms[k];
+cloudMat.uniforms.cloudMap = { value: world.cloudMapTex };
+cloudMat.uniforms.uNoise = { value: world.noiseTex };
 const hud = new HUD(document.getElementById('hud'));
 
 const G = {
@@ -321,6 +396,7 @@ function startGame(acId) {
   const mission = parseInt(params.get('m') || String(selectedMission));
   sessionStorage.setItem('ac_mission', String(mission));
   G.missionId = mission;
+  world.setMission(mission);
   G.mode = 'play';
   G.paused = false;
   G.endShown = false;
@@ -520,6 +596,14 @@ function step(dt) {
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
+  // 帧时间看门狗：持续超标则降画质档，恢复则升回
+  ftEMA = lerp(ftEMA, dt * 1000, 0.05);
+  qTimer += dt;
+  if (qTimer > 2) {
+    qTimer = 0;
+    if (ftEMA > 30 && qTier < 2) { qTier++; applyQuality(); }
+    else if (ftEMA < 16.5 && qTier > 0) { qTier--; applyQuality(); }
+  }
   if (!G.paused) step(dt);
   if (params.has('nocomposer')) { renderer.render(scene, camera); return; }
   camera.updateMatrixWorld();
@@ -537,11 +621,18 @@ renderer.setAnimationLoop(() => {
   world.sky.visible = true;
   weather.rain.visible = rainVis;
 
-  // 云 Pass uniforms
-  cloudPass.uniforms.camPos.value.copy(camera.position);
-  cloudPass.uniforms.invView.value.setFromMatrix4(camera.matrixWorld);
+  // 体积云渲染到半分辨率 RT → 去噪
+  cloudMat.uniforms.camPos.value.copy(camera.position);
+  cloudMat.uniforms.invView.value.setFromMatrix4(camera.matrixWorld);
   const tanH = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
-  cloudPass.uniforms.projInfo.value.set(tanH * camera.aspect, tanH);
+  cloudMat.uniforms.projInfo.value.set(tanH * camera.aspect, tanH);
+  renderer.setRenderTarget(cloudRT);
+  renderer.render(fsScene, fsCam);
+  fsMesh.material = blurMat;
+  renderer.setRenderTarget(cloudRT2);
+  renderer.render(fsScene, fsCam);
+  fsMesh.material = cloudMat;
+  renderer.setRenderTarget(null);
 
   // 体积光 uniforms（太阳屏幕位置与可见度）
   _sunV.copy(SUN_DIR).multiplyScalar(10000).add(camera.position).project(camera);

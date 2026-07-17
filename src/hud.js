@@ -151,6 +151,10 @@ export class HUD {
       const cn = g.combat.silo.cannon;
       this._t(`巨炮装甲 ${Math.max(0, Math.ceil(cn.hp))}/${cn.maxHp}`, W - 40, H - 74, 13, RED, 'right');
     }
+    if (g.combat.allyBird && g.combat.allyBird.alive) {
+      const ab = g.combat.allyBird;
+      this._t(`巨鸟结构 ${Math.max(0, Math.ceil(ab.hp))}/${ab.maxHp}`, W - 40, H - 52, 13, ab.hp > 40 ? '#7fdcff' : RED, 'right');
+    }
 
     // ============ 目标框 ============
     const lock = g.combat.lock;
@@ -179,6 +183,22 @@ export class HUD {
         }
       }
     }
+    // 我方巨鸟标记（青色 ALLY 框 + 结构条）
+    const ab = g.combat.allyBird;
+    if (ab && ab.alive && !ab.falling) {
+      if (projectToScreen(ab.pos, g.camera, W, H, _p)) {
+        const dist = ab.pos.distanceTo(p.pos);
+        const s = clamp(2600 / dist * 10, 16, 80);
+        c.strokeStyle = 'rgba(125,220,255,0.9)';
+        c.lineWidth = 1.5;
+        c.strokeRect(_p.x - s, _p.y - s * 0.7, s * 2, s * 1.4);
+        this._t(`ALLY 巨鸟 ${(dist / 1000).toFixed(1)}`, _p.x, _p.y - s * 0.7 - 11, 11, '#7fdcff', 'center');
+        c.fillStyle = 'rgba(50,80,100,0.7)';
+        c.fillRect(_p.x - s, _p.y + s * 0.7 + 6, s * 2, 4);
+        c.fillStyle = ab.hp > 40 ? '#7fdcff' : RED;
+        c.fillRect(_p.x - s, _p.y + s * 0.7 + 6, s * 2 * clamp(ab.hp / ab.maxHp, 0, 1), 4);
+      }
+    }
     // 锁定状态 / SHOOT
     if (lock.locked) {
       if (blink) this._t('◉ SHOOT', cx, cy + 74, 20, AMBER, 'center', true);
@@ -202,6 +222,10 @@ export class HUD {
     }
     if (g.combat.silo && g.combat.silo.cannon.charging > 0 && blink) {
       this._t('⚠ 巨炮充能', cx, wy, 22, AMBER, 'center', true);
+      wy += 28;
+    }
+    if (g.combat.silo && g.combat.silo.cannon.beamCharging > 0 && blink) {
+      this._t('⚠ 巨炮锁定我方巨鸟', cx, wy, 22, RED, 'center', true);
       wy += 28;
     }
 
@@ -313,10 +337,11 @@ export class HUD {
       c.globalAlpha = 1;
     };
 
-    blip(0, 0, 4, WHITE, 'diamond');                    // 宇宙电梯
+    if (g.combat.mission !== 2) blip(0, 0, 4, WHITE, 'diamond');      // 宇宙电梯（M1）
     for (const d of g.combat.drones) if (d.alive) blip(d.pos.x, d.pos.z, 3, RED);
     for (const m of g.combat.missiles) if (m.alive) blip(m.mesh.position.x, m.mesh.position.z, 2, AMBER);
     if (g.combat.bird && g.combat.bird.alive) blip(g.combat.bird.pos.x, g.combat.bird.pos.z, 6, RED, 'diamond');
+    if (g.combat.allyBird && g.combat.allyBird.alive) blip(g.combat.allyBird.pos.x, g.combat.allyBird.pos.z, 5, '#7fdcff', 'diamond');
     if (g.combat.groundTargets) {
       for (const gt of g.combat.groundTargets) if (gt.alive) blip(gt.pos.x, gt.pos.z, 4, AMBER, 'diamond');
     }

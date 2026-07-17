@@ -117,6 +117,8 @@ export class GameAudio {
     const m = this._music;
     if (!m) return;
     const stepDur = (60 / MUS_BPM) / 4;      // 16 分音符
+    // 页面休眠/卡顿后 nextT 会大幅落后：直接对齐当前时间，不补调度积压（否则瞬间创建数千节点卡死）
+    if (m.nextT < this.ctx.currentTime - 0.3) m.nextT = this.ctx.currentTime;
     while (m.nextT < this.ctx.currentTime + 0.18) {
       this._scheduleStep(m.step, m.nextT, stepDur);
       m.nextT += stepDur;
@@ -320,6 +322,7 @@ export class GameAudio {
   gun() { this._burst(0.06, 'bandpass', 2400, 900, 0.16); }
   explosion(size = 1) { this._burst(0.9 * size, 'lowpass', 2600, 60, 0.5 * Math.min(1.6, size), [160, 34]); }
   hit() { this._burst(0.12, 'bandpass', 1500, 500, 0.2); }
+  beam() { this._burst(1.1, 'highpass', 6000, 280, 0.4, [1900, 85]); }
   thunder(dist = 1000) {
     if (!this.ready) return;
     const delay = Math.min(6, dist / 340);
