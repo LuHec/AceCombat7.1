@@ -56,6 +56,17 @@ h1 .seven { color: #ffb340; text-shadow: 0 0 30px rgba(255,179,64,.8); }
 .card .ac-msl { margin-top: 12px; font-size: 12px; color: #ffd98a; }
 .select-foot { margin-top: 38px; color: #7fa0c8; font-size: 13px; letter-spacing: .25em; }
 
+/* 关卡选择 */
+#mtabs { display: flex; gap: 18px; margin-bottom: 26px; }
+.mtab { width: 320px; padding: 14px 18px; border: 1px solid rgba(120,170,230,.3); cursor: pointer;
+  background: linear-gradient(180deg, rgba(14,24,42,.8), rgba(8,14,26,.85)); transition: all .15s; text-align: left; }
+.mtab:hover { border-color: rgba(255,179,64,.7); }
+.mtab.sel { border-color: #ffb340; box-shadow: 0 0 22px rgba(255,179,64,.22); }
+.mtab .mt-name { font-size: 13px; color: #7fa0c8; letter-spacing: .25em; }
+.mtab .mt-code { font-size: 19px; color: #f2f8ff; font-weight: 700; margin: 4px 0 6px; }
+.mtab.sel .mt-code { color: #ffd98a; }
+.mtab .mt-desc { font-size: 12px; color: #8aa6c8; }
+
 /* 结算 */
 .end-title { font-size: 52px; font-weight: 800; letter-spacing: .2em; color: #ffd98a;
   text-shadow: 0 0 34px rgba(255,179,64,.55); }

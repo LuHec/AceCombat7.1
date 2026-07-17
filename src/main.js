@@ -218,6 +218,11 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'Digit1') startGame('f16');
     if (e.code === 'Digit2') startGame('f22');
     if (e.code === 'Digit3') startGame('su57');
+    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+      selectedMission = selectedMission === 1 ? 2 : 1;
+      sessionStorage.setItem('ac_mission', String(selectedMission));
+      refreshMtabs();
+    }
   } else if (G.mode === 'play') {
     if (e.code === 'KeyV' && G.player) G.player.camMode = (G.player.camMode + 1) % 3;
     if (e.code === 'KeyP') togglePause();
@@ -261,6 +266,20 @@ invertChk.addEventListener('change', () => {
 // ============ 菜单 ============
 const el = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
+let selectedMission = parseInt(sessionStorage.getItem('ac_mission') || '1');
+
+function refreshMtabs() {
+  document.querySelectorAll('.mtab').forEach((t) => {
+    t.classList.toggle('sel', parseInt(t.dataset.m) === selectedMission);
+  });
+}
+document.querySelectorAll('.mtab').forEach((t) => {
+  t.addEventListener('click', () => {
+    selectedMission = parseInt(t.dataset.m);
+    sessionStorage.setItem('ac_mission', String(selectedMission));
+    refreshMtabs();
+  });
+});
 
 function buildCards() {
   const wrap = el('cards');
@@ -286,6 +305,8 @@ buildCards();
 function showSelect() {
   G.mode = 'select';
   audio.setMusicLevel(1);
+  selectedMission = parseInt(sessionStorage.getItem('ac_mission') || '1');
+  refreshMtabs();
   el('menu-title').classList.add('hidden');
   el('menu-select').classList.remove('hidden');
 }
@@ -297,7 +318,8 @@ function addFeed(msg) {
 
 function startGame(acId) {
   const def = AIRCRAFT[acId] || AIRCRAFT.f22;
-  const mission = parseInt(params.get('m') || sessionStorage.getItem('ac_mission') || '1');
+  const mission = parseInt(params.get('m') || String(selectedMission));
+  sessionStorage.setItem('ac_mission', String(mission));
   G.missionId = mission;
   G.mode = 'play';
   G.paused = false;
